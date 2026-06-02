@@ -116,9 +116,24 @@ pub fn authorize_user_spawn_cwd(
 
 pub fn bootstrap_registry(registry: &WorkspaceRegistry) {
     let _ = registry.authorize(resolve_launch_dir());
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home_dir_for_bootstrap() {
         let _ = registry.authorize(home);
     }
+}
+
+/// On Android, `dirs::home_dir()` returns the system `$HOME` (often unset or
+/// `/`), not the app's private workspace. By the time `bootstrap_registry`
+/// runs (eager `manage` block, before `setup`) the Android home has not been
+/// created yet, so we return `None` and let `android_fs::init` re-authorize
+/// the real home from `setup`. On every other target, the OS home is fine.
+#[cfg(target_os = "android")]
+fn home_dir_for_bootstrap() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "android"))]
+fn home_dir_for_bootstrap() -> Option<PathBuf> {
+    dirs::home_dir()
 }
 
 #[tauri::command]
@@ -165,6 +180,17 @@ pub fn launch_cwd_snapshot() -> Option<PathBuf> {
 }
 
 fn resolve_launch_dir() -> PathBuf {
+    // Android: the OS-level "home" (`dirs::home_dir()`) is the system `$HOME`,
+    // which is meaningless to us. Prefer the cached app-private home, falling
+    // back to the platform default if `init` hasn't run yet.
+    #[cfg(target_os = "android")]
+    {
+        if let Some(home) = crate::modules::android_fs::home() {
+            if home.is_dir() {
+                return home.to_path_buf();
+            }
+        }
+    }
     if let Some(cwd) = launch_cwd_snapshot() {
         return cwd;
     }

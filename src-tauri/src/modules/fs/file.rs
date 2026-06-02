@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use std::{fs, io::Write};
 
+use base64::Engine;
 use serde::Serialize;
 use tauri::Emitter;
 use tempfile::NamedTempFile;

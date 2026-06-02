@@ -1,8 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
+import { platform } from "@tauri-apps/plugin-os";
 
 async function getAppHome(): Promise<string> {
-  // Prefer homeDir (works on Android to return app files dir).
+  // On Android, the app's Termux-style home lives at <appDataDir>/home. Using
+  // the raw Tauri `homeDir()` would dump imports one level above the user's
+  // home (e.g. into the app's files root) — outside the directory the
+  // explorer shows as the workspace root.
+  if (platform() === "android") {
+    const h = await invoke<string | null>("android_home_dir").catch(() => null);
+    if (h) return h.replace(/\\/g, "/");
+  }
   const h = await homeDir();
   return h.replace(/\\/g, "/");
 }

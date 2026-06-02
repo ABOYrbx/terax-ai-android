@@ -14,18 +14,29 @@ export async function initLaunchDir(): Promise<void> {
     return;
   }
 
-  // On Android, prefer the app home directory as a Termux-like workspace.
-  try {
-    const plt = platform();
-    if (plt === "android") {
+  // On Android, prefer the app's Termux-style home directory. `android_init_home`
+  // resolves and creates `<appDataDir>/home` in one round-trip; `android_home_dir`
+  // returns it after a prior `init`. The fallback to Tauri's generic `homeDir`
+  // covers the brief window before the Rust `init` has run on a cold start.
+  if (isAndroid()) {
+    try {
+      const h = await invoke<string | null>("android_home_dir");
+      if (h) {
+        cached = h.replace(/\\/g, "/");
+        return;
+      }
+    } catch {
+      // ignore — fall through to the next source
+    }
+    try {
       const h = await homeDir();
       if (h) {
         cached = h.replace(/\\/g, "/");
         return;
       }
+    } catch {
+      // ignore failures and fall through to undefined
     }
-  } catch {
-    // ignore failures and fall through to undefined
   }
 
   cached = undefined;
@@ -33,4 +44,15 @@ export async function initLaunchDir(): Promise<void> {
 
 export function getLaunchDir(): string | undefined {
   return cached;
+}
+
+let androidPltCache: boolean | null = null;
+function isAndroid(): boolean {
+  if (androidPltCache !== null) return androidPltCache;
+  try {
+    androidPltCache = platform() === "android";
+  } catch {
+    androidPltCache = false;
+  }
+  return androidPltCache;
 }

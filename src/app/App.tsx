@@ -183,17 +183,26 @@ function readSidebarView(): SidebarViewId {
 export default function App() {
   useEffect(() => {
     (async () => {
+      // The Rust `setup` callback already creates the Android home and
+      // authorizes it in the workspace registry before the webview loads.
+      // Calling `android_init_home` here just guarantees the webview has the
+      // path resolved in its own state for the very first paint, and is a
+      // no-op if `init` has already run.
+      if (typeof window === "undefined") return;
       try {
         const plt = platform();
-        if (plt === "android") {
-          const h = await homeDir();
-          if (h) {
-            // Ensure the app's home is authorized as a workspace root on Android
-            await invoke("workspace_authorize", { path: h, workspace: null }).catch(() => null);
-          }
+        if (plt !== "android") return;
+        const h = await invoke<string | null>("android_init_home").catch(
+          () => null,
+        );
+        if (h) {
+          await invoke("workspace_authorize", {
+            path: h,
+            workspace: null,
+          }).catch(() => null);
         }
       } catch {
-        // ignore
+        // ignore — the desktop path will run below
       }
     })();
   }, []);
@@ -352,24 +361,29 @@ export default function App() {
     null,
   );
   useEffect(() => {
-    homeDir()
+    // On Android, `android_home_dir` resolves to `<appDataDir>/home` and
+    // creates the layout on first call. On other platforms, the OS-level
+    // `homeDir()` from the Tauri path plugin is the right value.
+    const isAndroid = platform() === "android";
+    const promise = isAndroid
+      ? invoke<string | null>("android_home_dir").catch(() => null)
+      : homeDir().catch(() => null);
+
+    promise
       .then(async (p) => {
+        if (!p) {
+          setHome(null);
+          return;
+        }
         const normalized = p.replace(/\\/g, "/");
-        // Prefer a Termux-like `home` subdirectory inside the app files dir.
-        const preferred = normalized.replace(/\/$/, "") + "/home";
+        // On Android the Rust side already created the layout and authorized
+        // the home; we just re-authorize to make sure the webview's own state
+        // matches in case setup ran before this effect did.
         try {
-          // Ensure the preferred home exists and is authorized.
-          await native.createDir(preferred).catch(() => null);
-          await native.workspaceAuthorize(preferred);
-          setHome(preferred);
-        } catch {
-          // Fallback to the app files dir if creating/authorizing `home` fails.
+          await native.workspaceAuthorize(normalized);
           setHome(normalized);
-          try {
-            await native.workspaceAuthorize(normalized);
-          } catch {
-            // ignore
-          }
+        } catch {
+          setHome(normalized);
         }
       })
       .catch(() => setHome(null));

@@ -1,5 +1,7 @@
 pub mod modules;
 
+#[cfg(target_os = "android")]
+use modules::android_fs;
 use modules::{agent, fs, git, net, pty, shell, workspace};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use modules::secrets;
@@ -157,6 +159,26 @@ pub fn run() {
                     }
                 });
             }
+            // Android: materialize the Termux-style home + profile *before*
+            // any PTY/workspace command is invoked, so the first tab the user
+            // opens already has a usable filesystem. Also re-authorize the
+            // home + prefix as workspace roots; the eager `bootstrap_registry`
+            // ran before we had an AppHandle, so it couldn't see the Android
+            // paths and only got the empty `dirs::home_dir()` fallback.
+            #[cfg(target_os = "android")]
+            {
+                match android_fs::init(&_app.handle()) {
+                    Ok(home) => {
+                        log::info!("android home dir: {}", home.display());
+                        let registry = _app.state::<workspace::WorkspaceRegistry>();
+                        let _ = registry.authorize(&home);
+                        if let Some(prefix) = android_fs::prefix() {
+                            let _ = registry.authorize(prefix);
+                        }
+                    }
+                    Err(e) => log::error!("android_fs::init failed: {e}"),
+                }
+            }
             Ok(())
         })
         .manage(pty::PtyState::default())
@@ -245,6 +267,12 @@ pub fn run() {
             net::lm_ping,
             net::ai_http_request,
             net::ai_http_stream,
+            #[cfg(target_os = "android")]
+            android_fs::android_home_dir,
+            #[cfg(target_os = "android")]
+            android_fs::android_init_home,
+            #[cfg(target_os = "android")]
+            android_fs::android_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

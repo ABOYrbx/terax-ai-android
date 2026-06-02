@@ -1,4 +1,6 @@
 pub mod agent;
+#[cfg(target_os = "android")]
+pub mod android_fs;
 pub mod fs;
 pub mod git;
 pub mod net;

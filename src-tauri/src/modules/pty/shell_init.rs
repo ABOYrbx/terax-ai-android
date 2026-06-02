@@ -51,7 +51,12 @@ pub fn build_command(
     cwd: Option<String>,
     workspace: WorkspaceEnv,
 ) -> Result<CommandBuilder, String> {
-    #[cfg(unix)]
+    #[cfg(target_os = "android")]
+    {
+        let _ = workspace;
+        return android::build(cwd);
+    }
+    #[cfg(all(unix, not(target_os = "android")))]
     {
         let _ = workspace;
         unix::build(cwd)
@@ -88,9 +93,36 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     cmd.env("TERAX_TERMINAL", "1");
     ensure_utf8_locale(cmd);
 
+    // Android: pin HOME / PREFIX to the app-private home so the shell's $HOME
+    // matches the directory the user can see in the file explorer, and so
+    // /system/bin tools (`ls`, `cat`, …) resolve the way `.shrc` expects.
+    #[cfg(target_os = "android")]
+    {
+        if let Some(home) = crate::modules::android_fs::home() {
+            cmd.env("HOME", home);
+            let prefix = crate::modules::android_fs::prefix().unwrap_or(home);
+            cmd.env("PREFIX", prefix);
+            // POSIX: sh / mksh source $ENV at startup. Drop the path in
+            // explicitly so a fresh PTY inherits the same env as login shells.
+            let env_file = home.join(".shrc");
+            cmd.env("ENV", &env_file);
+            cmd.env("BASH_ENV", &env_file);
+        }
+    }
+
     let resolved_cwd = cwd
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
+        .or({
+            #[cfg(target_os = "android")]
+            {
+                crate::modules::android_fs::home().map(PathBuf::from)
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                None
+            }
+        })
         .or_else(|| workspace::launch_cwd_snapshot().filter(|p| p.is_dir()))
         .or_else(|| dirs::home_dir().filter(|p| p.is_dir()));
     if let Some(cwd) = resolved_cwd {
@@ -103,7 +135,45 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     }
 }
 
-#[cfg(unix)]
+// Android shell init.
+//
+// The OS-level shell is `/system/bin/sh` (mksh on older images, toybox ash on
+// newer). Neither speaks the `ZDOTDIR` / `--rcfile` / fish conf.d dance the
+// desktop module sets up, so we drive a single PATH of sh with a
+// `.shrc` sourced via `$ENV` for both interactive and one-shot invocations.
+// That keeps the Tauri `shell_run_command` path consistent with the PTY
+// without bespoke per-shell handling.
+#[cfg(target_os = "android")]
+mod android {
+    use std::path::Path;
+
+    use portable_pty::CommandBuilder;
+
+    pub fn build(cwd: Option<String>) -> Result<CommandBuilder, String> {
+        let shell = pick_shell();
+        let mut cmd = CommandBuilder::new(&shell);
+        super::apply_common(&mut cmd, cwd);
+        log::info!("spawning Android shell: {shell}");
+        Ok(cmd)
+    }
+
+    fn pick_shell() -> String {
+        // $SHELL is rarely set on Android. Prefer the canonical paths in
+        // `/system/bin` then `/bin`. Falling back to `sh` lets $PATH resolve
+        // the toybox shim on devices where neither directory listing matches.
+        for candidate in ["/system/bin/sh", "/bin/sh", "/system/bin/bash", "/bin/bash"] {
+            if Path::new(candidate).exists() {
+                return candidate.to_string();
+            }
+        }
+        "sh".to_string()
+    }
+}
+
+// `unix` covers Linux + macOS only — Android has its own module above
+// because the OS shell is mksh/toybox sh, not zsh/bash/fish, and the
+// `getpwuid` shenanigans in `login_shell` would just return junk there.
+#[cfg(all(unix, not(target_os = "android")))]
 mod unix {
     use std::ffi::OsString;
     use std::fs;

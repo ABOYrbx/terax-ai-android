@@ -29,6 +29,9 @@ dist-ssr
 src-tauri/target/
 src-tauri/gen/
 
+# Local Android SDK / NDK install used for desktop cross-check
+build-tools/
+
 # Sensitive config (keystore and signing)
 src-tauri/android.keystore
 src-tauri/signing.properties
