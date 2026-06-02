@@ -110,13 +110,3 @@ src/                -- React frontend (shared with desktop)
 src-tauri/          -- Rust backend (shared with desktop)
 docs/               -- Screenshots from the desktop build
 ```
-
-## Contributing
-
-This is an active development port — alignment matters. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Read [ROADMAP.md](ROADMAP.md) before proposing anything non-trivial.
-
-Issues and PRs are welcome. For discussion join the [Crynta Discord](https://discord.gg/tyveTUyEp7).
-
-## License
-
-Terax is licensed under the Apache-2.0 License. See [LICENSE](LICENSE) for details.
