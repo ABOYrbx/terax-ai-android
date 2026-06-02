@@ -66,7 +66,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/aarch64/debug/app-aarch64-debug.apk
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -141,13 +141,13 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const glob = require('@actions/glob');
-            const apk = 'src-tauri/gen/android/app/build/outputs/apk/aarch64/release/app-aarch64-release.apk';
+            const apk = 'src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk';
             if (fs.existsSync(apk)) {
               const { data } = await github.repos.uploadReleaseAsset({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 release_id: ${{ steps.create_release.outputs.id }},
-                name: 'terax-aarch64-release.apk',
+                name: 'terax-universal-release.apk',
                 data: fs.readFileSync(apk)
               });
               console.log('uploaded', data.browser_download_url);
