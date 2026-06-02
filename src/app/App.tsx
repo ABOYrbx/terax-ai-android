@@ -114,6 +114,7 @@ import {
 } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
+import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
@@ -180,6 +181,22 @@ function readSidebarView(): SidebarViewId {
 }
 
 export default function App() {
+  useEffect(() => {
+    (async () => {
+      try {
+        const plt = platform();
+        if (plt === "android") {
+          const h = await homeDir();
+          if (h) {
+            // Ensure the app's home is authorized as a workspace root on Android
+            await invoke("workspace_authorize", { path: h, workspace: null }).catch(() => null);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
   const {
     tabs,
     activeId,
@@ -338,11 +355,21 @@ export default function App() {
     homeDir()
       .then(async (p) => {
         const normalized = p.replace(/\\/g, "/");
-        setHome(normalized);
+        // Prefer a Termux-like `home` subdirectory inside the app files dir.
+        const preferred = normalized.replace(/\/$/, "") + "/home";
         try {
-          await native.workspaceAuthorize(normalized);
+          // Ensure the preferred home exists and is authorized.
+          await native.createDir(preferred).catch(() => null);
+          await native.workspaceAuthorize(preferred);
+          setHome(preferred);
         } catch {
-          // Bootstrap already authorizes home from Rust; ignore.
+          // Fallback to the app files dir if creating/authorizing `home` fails.
+          setHome(normalized);
+          try {
+            await native.workspaceAuthorize(normalized);
+          } catch {
+            // ignore
+          }
         }
       })
       .catch(() => setHome(null));

@@ -182,6 +182,8 @@ pub fn shell_session_open(
         None => {
             if let WorkspaceEnv::Wsl { distro } = &workspace {
                 crate::modules::workspace::wsl_home(distro.clone())?
+            } else if let Some(launch) = crate::modules::workspace::launch_cwd_snapshot() {
+                launch.to_string_lossy().to_string()
             } else {
                 crate::modules::fs::to_canon(dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
             }

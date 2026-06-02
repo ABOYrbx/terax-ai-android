@@ -128,6 +128,43 @@ pub fn fs_write_file(
     Ok(())
 }
 
+/// Accepts base64-encoded file content and writes decoded bytes atomically.
+#[tauri::command]
+pub fn fs_write_file_base64(
+    path: String,
+    content_base64: String,
+    workspace: Option<WorkspaceEnv>,
+    source: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let target = resolve_path(&path, &workspace);
+    let original_permissions = fs::metadata(&target).ok().map(|m| m.permissions());
+
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(&content_base64) {
+        Ok(b) => b,
+        Err(e) => return Err(e.to_string()),
+    };
+
+    write_atomic(&target, &decoded).map_err(|e| {
+        log::warn!("fs_write_file_base64({}) failed: {e}", target.display());
+        e.to_string()
+    })?;
+
+    if let Some(perms) = original_permissions {
+        let _ = fs::set_permissions(&target, perms);
+    }
+    let _ = app.emit(
+        "fs:file-written",
+        FileWrittenEvent {
+            path: path.clone(),
+            source,
+        },
+    );
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn fs_canonicalize(path: String, workspace: Option<WorkspaceEnv>) -> Result<String, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
