@@ -84,3 +84,10 @@ lto = "fat"
 opt-level = "s"
 panic = "abort"
 strip = true
+
+[package.metadata.android.signing]
+[package.metadata.android.signing.release]
+path = "android.keystore"
+keystore_password = "android"
+key_alias = "key0"
+key_password = "android"

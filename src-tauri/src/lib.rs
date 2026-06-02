@@ -1,10 +1,15 @@
 pub mod modules;
 
-use modules::{agent, fs, git, net, pty, secrets, shell, workspace};
+use modules::{agent, fs, git, net, pty, shell, workspace};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use modules::secrets;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+#[cfg(not(target_os = "android"))]
+use tauri::Emitter;
 #[cfg(target_os = "macos")]
 use tauri::{PhysicalPosition, WindowEvent};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_window_state::StateFlags;
 
 /// Drained on first read so HMR / re-mounts can't replay the launch dir.
@@ -32,6 +37,7 @@ fn parse_launch_dir() -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     let url_path = match tab.as_deref() {
@@ -40,12 +46,11 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     };
 
     if let Some(window) = app.get_webview_window("settings") {
+        #[cfg(not(target_os = "android"))]
         let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
         if let Some(t) = tab.as_deref().filter(|s| !s.is_empty()) {
-            // emit() serializes via JSON — no string-escape footgun, unlike
-            // eval() with format!(). Frontend listens via Tauri event API.
             let _ = window.emit("terax:settings-tab", t);
         }
         return Ok(());
@@ -56,14 +61,10 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
         .inner_size(900.0, 700.0)
         .min_inner_size(820.0, 620.0)
         .resizable(true)
-        .visible(false)
-        // Keep settings above the main app window so it doesn't get hidden
-        // when the user clicks back into the editor or terminal (#33).
-        .always_on_top(true);
+        .visible(false);
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.always_on_top(true);
 
-    // Tie lifecycle to the main window so settings minimizes/closes with it.
-    // macOS: skip parent() — child + always_on_top leaves the settings webview
-    // behind the main window except while the parent is being dragged (#33).
     #[cfg(not(target_os = "macos"))]
     let builder = if let Some(main) = app.get_webview_window("main") {
         builder.parent(&main).map_err(|e| e.to_string())?
@@ -76,15 +77,11 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true);
 
-    // On Linux/Windows we render our own titlebar, so drop native chrome
-    // and make the window transparent.
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     let builder = builder.decorations(false).transparent(true);
 
     let window = builder.build().map_err(|e| e.to_string())?;
 
-    // Some Linux compositors (GNOME/Mutter with CSD-by-default) ignore the
-    // builder-time decorations flag — re-assert it after realize.
     #[cfg(target_os = "linux")]
     {
         let _ = window.set_decorations(false);
@@ -110,23 +107,19 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     Ok(())
 }
 
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn open_settings_window(_app: tauri::AppHandle, _tab: Option<String>) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cli_dir = parse_launch_dir();
     workspace::init_launch_cwd(cli_dir.as_deref());
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        // Skip restoring VISIBLE — frontend calls window.show() after first
-        // paint so the user never sees a transparent window-shadow flash on
-        // Windows/Linux.
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
-                .build(),
-        )
-        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
@@ -135,10 +128,21 @@ pub fn run() {
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::new()
+            .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+            .build(),
+    );
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
+
+    let builder = builder
         .setup(|_app| {
-            // macOS skips parent() for the settings window, so tie its lifecycle
-            // to the main window here instead. Other platforms keep parent().
             #[cfg(target_os = "macos")]
             if let Some(main) = _app.get_webview_window("main") {
                 let handle = _app.handle().clone();
@@ -156,8 +160,12 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyState::default())
-        .manage(shell::ShellState::default())
-        .manage(secrets::SecretsState::default())
+        .manage(shell::ShellState::default());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.manage(secrets::SecretsState::default());
+
+    let builder = builder
         .manage(fs::watch::FsWatchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
@@ -225,9 +233,13 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_claude_hooks,
             agent::agent_claude_hooks_status,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_get,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_set,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_delete,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_get_all,
             net::lm_ping,
             net::ai_http_request,

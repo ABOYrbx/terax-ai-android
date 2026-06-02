@@ -24,3 +24,12 @@ dist-ssr
 *.sw?
 
 *.tsbuildinfo
+
+# Rust build outputs
+src-tauri/target/
+src-tauri/gen/
+
+# Sensitive config (keystore and signing)
+src-tauri/android.keystore
+src-tauri/signing.properties
+src-tauri/.cargo/config.toml
