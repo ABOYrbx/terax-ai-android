@@ -16,7 +16,29 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        val executable = """pnpm""";
+        val target = target ?: throw GradleException("target cannot be null")
+        val release = release ?: throw GradleException("release cannot be null")
+
+        // Skip if native library already up-to-date
+        val targetAbi = when (target) {
+            "aarch64" -> "arm64-v8a"
+            "armv7" -> "armeabi-v7a"
+            "i686" -> "x86"
+            "x86_64" -> "x86_64"
+            else -> null
+        }
+        if (targetAbi != null) {
+            val libFile = File(project.projectDir, "src/main/jniLibs/$targetAbi/libterax_lib.so")
+            val cargoLock = File(project.projectDir, "../../src-tauri/Cargo.lock")
+            if (libFile.exists() && (!cargoLock.exists() || libFile.lastModified() >= cargoLock.lastModified())) {
+                project.logger.lifecycle("Native library for $target is up-to-date, skipping build.")
+                return
+            }
+        }
+
+        val executable = project.findProperty("pnpmPath") as? String
+            ?: project.rootProject.findProperty("pnpmPath") as? String
+            ?: "pnpm"
         try {
             runTauriCli(executable)
         } catch (e: Exception) {
@@ -48,21 +70,30 @@ open class BuildTask : DefaultTask() {
         val rootDirRel = rootDirRel ?: throw GradleException("rootDirRel cannot be null")
         val target = target ?: throw GradleException("target cannot be null")
         val release = release ?: throw GradleException("release cannot be null")
-        val args = listOf("tauri", "android", "android-studio-script");
 
+        // Build args: use `tauri android build` instead of `android-studio-script`
+        val args = mutableListOf("tauri", "android", "build")
+        args.add("--target")
+        args.add(target)
+        if (release) {
+            args.add("--release")
+        }
+        // Build APK (will generate .so files in jniLibs)
+        args.add("--apk")
+        // CI mode to skip prompts
+        args.add("--ci")
+
+        val pathEnv = System.getenv("PATH")
         project.exec {
             workingDir(File(project.projectDir, rootDirRel))
             executable(executable)
             args(args)
+            environment("PATH", "/Users/lennardmertins/.cargo/bin:$pathEnv")
             if (project.logger.isEnabled(LogLevel.DEBUG)) {
                 args("-vv")
             } else if (project.logger.isEnabled(LogLevel.INFO)) {
                 args("-v")
             }
-            if (release) {
-                args("--release")
-            }
-            args(listOf("--target", target))
         }.assertNormalExitValue()
     }
 }

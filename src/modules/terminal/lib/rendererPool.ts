@@ -9,6 +9,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import {
+  androidPrintableKeySequence,
   terminalDeleteSequence,
   terminalLineNavigationSequence,
   terminalWordNavigationSequence,
@@ -168,6 +169,11 @@ function createSlot(): Slot {
 
   attachWebgl(slot);
 
+  // Shared state for the Android typing fallback paths. The keydown handler
+  // and the beforeinput listener below both consult this to avoid double
+  // writes when both events fire for the same keystroke.
+  let lastBeforeInputAt = 0;
+
   term.attachCustomKeyEventHandler((event) => {
     // During IME composition the browser is assembling a multi-keystroke
     // character (Chinese pinyin → hanzi, Korean jamo → syllable, etc.).
@@ -227,6 +233,36 @@ function createSlot(): Slot {
       event.preventDefault();
       return false;
     }
+    // Android soft keyboard fallback. Tauri/wry's WebView on Android dispatches
+    // a keydown for printable characters with `keyCode === 0` (the soft IME
+    // never sets a virtual keycode), the follow-up `keypress` event is omitted
+    // in many builds, and xterm.js v6's `_inputEvent` rejects the subsequent
+    // `insertText` input event because it already saw a keydown. The result is
+    // that every letter is dropped on the floor while Enter (keyCode 13, its
+    // own case in evaluateKeyboardEvent) keeps working. Forward printable keys
+    // straight to the PTY from here and stop xterm.js from touching the event.
+    const androidChar = androidPrintableKeySequence(event);
+    if (androidChar !== null) {
+      // The `beforeinput` listener below is the more reliable path on
+      // modern Android WebViews. If it already fired for this keystroke,
+      // skip the duplicate write.
+      if (performance.now() - lastBeforeInputAt < 50) {
+        event.preventDefault();
+        (slot.term as unknown as { _keyDownSeen?: boolean })._keyDownSeen =
+          true;
+        return false;
+      }
+      event.preventDefault();
+      // Mark the keydown as seen so the upcoming `input` event (capture-phase
+      // listener registered by xterm.js) is rejected by its
+      // `(!composed || !_keyDownSeen)` guard. Without this, the soft IME
+      // would re-emit the same character and the shell would see `aa`.
+      // `_keyDownSeen` is reset by xterm.js on the matching keyup, so the
+      // next character goes through normally.
+      (slot.term as unknown as { _keyDownSeen?: boolean })._keyDownSeen = true;
+      bridge.writeToPty(androidChar);
+      return false;
+    }
     return true;
   });
 
@@ -235,6 +271,40 @@ function createSlot(): Slot {
     if (leafId === null) return;
     adapter?.resolveLeaf(leafId)?.writeToPty(data);
   });
+
+  // Android typing fallback. xterm.js v6's keydown+input event chain is
+  // unreliable inside Tauri/wry's WebView on Android: soft-IMEs (Gboard, etc.)
+  // dispatch keydowns with `keyCode === 0` and often omit keypress, and the
+  // trailing `insertText` input event is rejected because a keydown was seen
+  // (`!composed || !_keyDownSeen` fails). Even when keyCode is set, the
+  // follow-up events can be dropped. The `beforeinput` event is the only
+  // signal that consistently fires on Android before the textarea value
+  // changes, so we forward printable characters straight to the PTY from
+  // there and suppress the default insertion.
+  const textarea = (term as unknown as { textarea?: HTMLTextAreaElement })
+    .textarea;
+  if (textarea) {
+    textarea.addEventListener(
+      "beforeinput",
+      (e) => {
+        if (e.isComposing) return;
+        if (e.inputType !== "insertText") return;
+        const data = e.data;
+        if (!data || data.length === 0) return;
+        const leafId = slot.currentLeafId;
+        if (leafId === null) return;
+        const bridge = adapter?.resolveLeaf(leafId);
+        if (!bridge) return;
+        // Suppress the keydown fallback (when it fires for keyCode===0) so
+        // the same character isn't also written by that path.
+        lastBeforeInputAt = performance.now();
+        bridge.writeToPty(data);
+        e.preventDefault();
+        e.stopPropagation();
+      },
+      true,
+    );
+  }
 
   slots.push(slot);
   return slot;

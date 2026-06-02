@@ -1,11 +1,17 @@
 export type TerminalKeyEvent = Pick<
   KeyboardEvent,
-  "altKey" | "ctrlKey" | "metaKey" | "key" | "code"
->;
+  "altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "key" | "code"
+> & {
+  keyCode?: number;
+  type?: string;
+  isComposing?: boolean;
+};
 
 export type PlatformOpts = { isMac: boolean };
 
-export function terminalWordNavigationSequence(event: TerminalKeyEvent): string | null {
+export function terminalWordNavigationSequence(
+  event: TerminalKeyEvent,
+): string | null {
   if (!event.altKey || event.ctrlKey || event.metaKey) return null;
   if (event.key === "ArrowLeft" || event.code === "ArrowLeft") return "\x1bb";
   if (event.key === "ArrowRight" || event.code === "ArrowRight") return "\x1bf";
@@ -42,4 +48,22 @@ export function terminalDeleteSequence(
   }
   if (event.ctrlKey && !event.altKey && !event.metaKey) return "\x17";
   return null;
+}
+
+/** Tauri/wry's WebView on Android fires a keydown for soft-keyboard printable
+ * characters with `keyCode === 0`; the follow-up `keypress` is often omitted,
+ * and xterm.js v6's input event handler rejects the subsequent `insertText`
+ * because a keydown was already seen. The only safe place to forward the
+ * character is here, from the custom key handler. Returns the literal char
+ * to write to the PTY, or null when the standard xterm.js path should be
+ * allowed to run. */
+export function androidPrintableKeySequence(
+  event: TerminalKeyEvent,
+): string | null {
+  if (event.type !== "keydown") return null;
+  if (event.isComposing) return null;
+  if (event.keyCode !== 0) return null;
+  if (event.ctrlKey || event.altKey || event.metaKey) return null;
+  if (event.key.length !== 1) return null;
+  return event.key;
 }

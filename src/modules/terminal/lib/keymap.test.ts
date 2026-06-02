@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  androidPrintableKeySequence,
   terminalDeleteSequence,
   terminalLineNavigationSequence,
   terminalWordNavigationSequence,
@@ -11,6 +12,7 @@ const evt = (partial: Partial<TerminalKeyEvent>): TerminalKeyEvent => ({
   altKey: false,
   ctrlKey: false,
   metaKey: false,
+  shiftKey: false,
   key: "",
   code: "",
   ...partial,
@@ -73,7 +75,12 @@ describe("terminalLineNavigationSequence", () => {
   it("does not remap Cmd+Option+Arrow (selection-style combos pass through)", () => {
     expect(
       terminalLineNavigationSequence(
-        evt({ metaKey: true, altKey: true, key: "ArrowLeft", code: "ArrowLeft" }),
+        evt({
+          metaKey: true,
+          altKey: true,
+          key: "ArrowLeft",
+          code: "ArrowLeft",
+        }),
         { isMac: true },
       ),
     ).toBeNull();
@@ -128,9 +135,113 @@ describe("terminalDeleteSequence", () => {
 
   it("does not remap plain Backspace", () => {
     expect(
-      terminalDeleteSequence(
-        evt({ key: "Backspace", code: "Backspace" }),
-        { isMac: true },
+      terminalDeleteSequence(evt({ key: "Backspace", code: "Backspace" }), {
+        isMac: true,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("androidPrintableKeySequence", () => {
+  it("forwards a plain soft-keyboard letter", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keydown", keyCode: 0, key: "a", code: "a" }),
+      ),
+    ).toBe("a");
+  });
+
+  it("forwards uppercase when shift is held", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 0,
+          key: "A",
+          code: "KeyA",
+          shiftKey: true,
+        }),
+      ),
+    ).toBe("A");
+  });
+
+  it("forwards non-ASCII printable keys (accented chars, CJK, emoji)", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keydown", keyCode: 0, key: "é", code: "KeyE" }),
+      ),
+    ).toBe("é");
+  });
+
+  it("ignores keypress events", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keypress", keyCode: 0, key: "a", code: "a" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores composing events so the IME composition flow stays in xterm", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 0,
+          key: "a",
+          code: "a",
+          isComposing: true,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores physical-key events (keyCode set)", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keydown", keyCode: 65, key: "a", code: "KeyA" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores events with modifiers", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 0,
+          key: "a",
+          code: "a",
+          ctrlKey: true,
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keydown", keyCode: 0, key: "a", code: "a", altKey: true }),
+      ),
+    ).toBeNull();
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 0,
+          key: "a",
+          code: "a",
+          metaKey: true,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores multi-character keys (ArrowLeft, Enter, etc.)", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 0,
+          key: "Enter",
+          code: "Enter",
+        }),
       ),
     ).toBeNull();
   });
