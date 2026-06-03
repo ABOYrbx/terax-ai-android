@@ -139,6 +139,28 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     }
 }
 
+/// Returns the shell path for one-shot command execution.
+/// On desktop Unix: uses `$SHELL` or the detected login shell.
+/// On Android: probes known shell paths.
+/// On Windows: returns the appropriate PowerShell or cmd path.
+pub fn oneshot_shell_path() -> String {
+    #[cfg(target_os = "android")]
+    {
+        android::pick_shell()
+    }
+    #[cfg(all(unix, not(target_os = "android")))]
+    {
+        std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| unix::login_shell().unwrap_or_else(|| "/bin/zsh".to_string()))
+    }
+    #[cfg(windows)]
+    {
+        windows_shell_path().to_string_lossy().to_string()
+    }
+}
+
 // Android shell init.
 //
 // The OS-level shell is `/system/bin/sh` (mksh on older images, toybox ash on
@@ -161,16 +183,17 @@ mod android {
         Ok(cmd)
     }
 
-    fn pick_shell() -> String {
-        // $SHELL is rarely set on Android. Prefer the canonical paths in
-        // `/system/bin` then `/bin`. Falling back to `sh` lets $PATH resolve
-        // the toybox shim on devices where neither directory listing matches.
-        for candidate in ["/system/bin/sh", "/bin/sh", "/system/bin/bash", "/bin/bash"] {
+    pub(super) fn pick_shell() -> String {
+        // $SHELL is rarely set on Android. Prefer bash over sh for a richer
+        // interactive experience. Check canonical paths in `/system/bin` then
+        // `/bin`. Falling back to `sh` lets $PATH resolve the toybox shim on
+        // devices where neither directory listing matches.
+        for candidate in ["/system/bin/bash", "/bin/bash", "/system/bin/sh", "/bin/sh"] {
             if Path::new(candidate).exists() {
                 return candidate.to_string();
             }
         }
-        "sh".to_string()
+        "bash".to_string()
     }
 }
 
@@ -216,7 +239,7 @@ mod unix {
         }
     }
 
-    fn login_shell() -> Option<String> {
+    pub(super) fn login_shell() -> Option<String> {
         use std::ffi::CStr;
         unsafe {
             let uid = libc::getuid();
@@ -374,7 +397,9 @@ mod windows {
             zdotdir: String,
             user_zdotdir: Option<String>,
         },
-        Bash { rcfile: String },
+        Bash {
+            rcfile: String,
+        },
         Fish,
         None,
     }
