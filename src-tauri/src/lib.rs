@@ -4,9 +4,7 @@ pub mod modules;
 use modules::android_fs;
 #[cfg(target_os = "android")]
 use modules::termux_pkg;
-use modules::{agent, fs, git, net, pty, shell, workspace};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use modules::secrets;
+use modules::{agent, fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
