@@ -124,38 +124,7 @@ jobs:
         run: pnpm tauri android init --ci
 
       - name: Setup Android signing
-        run: |
-          BUILD_GRADLE="src-tauri/gen/android/app/build.gradle.kts"
-
-          # Create keystore.properties
-          cat > src-tauri/gen/android/keystore.properties << 'PROPS'
-          storePassword=android
-          keyPassword=android
-          keyAlias=key0
-          storeFile=${{ github.workspace }}/src-tauri/android.keystore
-          PROPS
-
-          # Add FileInputStream import
-          sed -i '/^import java.util.Properties$/a import java.io.FileInputStream' "$BUILD_GRADLE"
-
-          # Add signingConfigs block before buildTypes
-          sed -i '/^    buildTypes {/i\
-        signingConfigs {\
-            create("release") {\
-                val keystorePropertiesFile = rootProject.file("keystore.properties")\
-                val keystoreProperties = Properties()\
-                if (keystorePropertiesFile.exists()) {\
-                    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\
-                }\
-                keyAlias = keystoreProperties["keyAlias"] as String\
-                keyPassword = keystoreProperties["password"] as String\
-                storeFile = file(keystoreProperties["storeFile"] as String)\
-                storePassword = keystoreProperties["password"] as String\
-            }\
-        }' "$BUILD_GRADLE"
-
-          # Add signingConfig to release buildType
-          sed -i '/getByName("release") {/a\            signingConfig = signingConfigs.getByName("release")' "$BUILD_GRADLE"
+        run: python3 scripts/setup-android-signing.py
 
       - name: Build Release APK
         run: pnpm tauri android build --apk --ci --target aarch64
