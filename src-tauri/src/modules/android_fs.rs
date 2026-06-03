@@ -494,16 +494,13 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     // Write the `termux-setup` helper script into $PREFIX/bin so users
     // can run it from the terminal.
     let termux_setup = prefix.join(BIN_DIR_NAME).join("termux-setup");
-    write_if_changed(&termux_setup, TERMUX_SETUP_SCRIPT)
+    write_executable(&termux_setup, TERMUX_SETUP_SCRIPT)
         .map_err(|e| format!("write {}/bin/termux-setup: {e}", prefix.display()))?;
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(&termux_setup, fs::Permissions::from_mode(0o755));
 
     // Write the `pkg` command (Termux-compatible apt wrapper).
     let pkg = prefix.join(BIN_DIR_NAME).join("pkg");
-    write_if_changed(&pkg, PKG_SCRIPT)
+    write_executable(&pkg, PKG_SCRIPT)
         .map_err(|e| format!("write {}/bin/pkg: {e}", prefix.display()))?;
-    let _ = fs::set_permissions(&pkg, fs::Permissions::from_mode(0o755));
 
     // TERAX.md documents `TERAX_HOME` as a public convention; surface it for
     // the webview's onboarding copy via a small file users can `cat`.
@@ -535,6 +532,32 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
         }
     }
     fs::write(path, content)
+}
+
+/// Like `write_if_changed` but ensures the file is executable (0o755).
+/// Uses `OpenOptionsExt::mode` on Unix to set permissions atomically
+/// at creation time, avoiding a separate `set_permissions` call that
+/// might fail silently on some Android filesystems.
+fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
+    if let Ok(existing) = fs::read_to_string(path) {
+        if existing == content {
+            let meta = path.metadata()?;
+            let perms = meta.permissions();
+            if (perms.mode() & 0o111) != 0 {
+                return Ok(());
+            }
+        }
+    }
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o755)
+        .open(path)?;
+    f.write_all(content.as_bytes())?;
+    f.sync_all()
 }
 
 /// Tauri command: returns the Termux-style home dir on Android, null
