@@ -37,14 +37,29 @@ export TERAX_PREFIX="$PREFIX"
 # farm on most devices; /vendor/bin carries OEM-specific tools.
 export PATH="$PREFIX/bin:/system/bin:/system/xbin:/vendor/bin:/product/bin:$PATH"
 
+# Termux binaries (apt, dpkg, ...) need LD_LIBRARY_PATH to find shared libs.
+export LD_LIBRARY_PATH="$PREFIX/lib"
+export TMPDIR="$PREFIX/tmp"
+
 # Termux-compatible conveniences. ls is the most-noticeable upgrade.
 alias ll='ls -la'
 alias la='ls -A'
 alias l='ls -CF'
 alias cls='clear'
 
+# Show termux setup notice if the bootstrap is not yet installed.
+if [ ! -f "$PREFIX/bin/apt" ] && [ -n "$PS1" ]; then
+  printf '\033[1;33m╔══════════════════════════════════════════════════════════╗\033[0m\n'
+  printf '\033[1;33m║\033[0m  \033[1;37mTerax Package Manager\033[0m                                          \033[1;33m║\033[0m\n'
+  printf '\033[1;33m║\033[0m                                                      \033[1;33m║\033[0m\n'
+  printf '\033[1;33m║\033[0m  Install the Termux bootstrap to get developer tools   \033[1;33m║\033[0m\n'
+  printf '\033[1;33m║\033[0m  like \033[1;36mopenssh\033[0m, \033[1;36mgit\033[0m, \033[1;36mpython\033[0m, \033[1;36mnodejs\033[0m, and hundreds more.          \033[1;33m║\033[0m\n'
+  printf '\033[1;33m║\033[0m                                                      \033[1;33m║\033[0m\n'
+  printf '\033[1;33m║\033[0m  Run:  \033[1;32mtermux-setup\033[0m                                            \033[1;33m║\033[0m\n'
+  printf '\033[1;33m╚══════════════════════════════════════════════════════════╝\033[0m\n'
+fi
+
 # A helpful prompt that reflects cwd and exit status.
-# $? in the prompt would re-evaluate, so we use a one-shot via _prompt_status.
 if [ -n "$PS1" ]; then
   _terax_prompt() {
     _ec=$?
@@ -53,6 +68,239 @@ if [ -n "$PS1" ]; then
   }
   PROMPT_COMMAND=_terax_prompt
 fi
+"#;
+
+/// `termux-setup` shell script placed in `$PREFIX/bin/`. Self-contained
+/// installer that downloads and extracts the Termux bootstrap using system
+/// tools (toybox/busybox) available on all modern Android devices.
+const TERMUX_SETUP_SCRIPT: &str = r#"#!/system/bin/sh
+# Terax: Termux Package Manager Setup
+#
+# Downloads and installs the Termux bootstrap using system tools.
+# After installation, use:  apt install <package>
+#
+# Packages available: openssh, git, python, nodejs, build-essential, vim, ...
+
+set -e
+
+ARCH=$(uname -m)
+case "$ARCH" in
+  aarch64) BOOTSTRAP_ARCH="aarch64" ;;
+  armv7l|armv8l) BOOTSTRAP_ARCH="arm" ;;
+  x86_64)  BOOTSTRAP_ARCH="x86_64" ;;
+  i686|i586|i486) BOOTSTRAP_ARCH="i686" ;;
+  *)
+    printf '\033[1;31mError:\033[0m Unsupported architecture: %s\n' "$ARCH"
+    exit 1
+    ;;
+esac
+
+PREFIX="${PREFIX:-/data/data/app.crynta.terax/files/usr}"
+
+printf '\033[1;33m╔══════════════════════════════════════════════════════════╗\033[0m\n'
+printf '\033[1;33m║\033[0m  \033[1;37mTerax Package Manager Setup\033[0m                                 \033[1;33m║\033[0m\n'
+printf '\033[1;33m╚══════════════════════════════════════════════════════════╝\033[0m\n'
+printf '\n'
+printf 'Architecture: \033[1;36m%s\033[0m\n' "$BOOTSTRAP_ARCH"
+printf 'Prefix:       \033[1;36m%s\033[0m\n' "$PREFIX"
+printf '\n'
+
+if [ -x "$PREFIX/bin/apt" ]; then
+  printf '\033[1;32mTermux bootstrap is already installed.\033[0m\n'
+  printf 'Run \033[1;36mapt update\033[0m to refresh package lists.\n'
+  exit 0
+fi
+
+# Check for required tools
+HAVE_CURL=0
+HAVE_WGET=0
+HAVE_UNZIP=0
+command -v curl  >/dev/null 2>&1 && HAVE_CURL=1
+command -v wget  >/dev/null 2>&1 && HAVE_WGET=1
+command -v unzip >/dev/null 2>&1 && HAVE_UNZIP=1
+
+DOWNLOAD_CMD=""
+if [ "$HAVE_CURL" = "1" ]; then
+  DOWNLOAD_CMD="curl -L"
+elif [ "$HAVE_WGET" = "1" ]; then
+  DOWNLOAD_CMD="wget -O"
+fi
+
+if [ -z "$DOWNLOAD_CMD" ] || [ "$HAVE_UNZIP" = "0" ]; then
+  printf '\033[1;31mError:\033[0m Neither curl nor wget found, or unzip is missing.\n'
+  printf 'Please install them from Settings -> Packages or use\n'
+  printf 'a device with a full toybox/busybox installation.\n'
+  exit 1
+fi
+
+TMPDIR="${TMPDIR:-/data/local/tmp}"
+TMPFILE="$TMPDIR/termux-bootstrap-$$.zip"
+BOOTSTRAP_URL="https://github.com/termux/termux-packages/releases/latest/download/bootstrap-${BOOTSTRAP_ARCH}.zip"
+
+printf 'Downloading \033[1;36m%s\033[0m\n' "$BOOTSTRAP_URL"
+printf 'Target:      \033[1;36m%s\033[0m\n' "$PREFIX"
+printf '\n'
+
+if [ "$HAVE_CURL" = "1" ]; then
+  curl -L --progress-bar -o "$TMPFILE" "$BOOTSTRAP_URL"
+else
+  wget -O "$TMPFILE" "$BOOTSTRAP_URL" 2>&1
+fi
+
+printf '\n\033[1;33mExtracting bootstrap...\033[0m\n'
+unzip -o "$TMPFILE" -d "$PREFIX" 2>&1 | awk 'BEGIN{ORS=" "}{print "."}END{printf "\n"}'
+
+# Process SYMLINKS.txt if present
+if [ -f "$PREFIX/SYMLINKS.txt" ]; then
+  printf '\033[1;33mRestoring symlinks...\033[0m\n'
+  while IFS='←' read -r target link_path; do
+    [ -z "$target" ] && continue
+    link_path=$(printf '%s' "$link_path" | sed 's|^\./||')
+    ln -sf "$target" "$PREFIX/$link_path" 2>/dev/null || true
+  done < "$PREFIX/SYMLINKS.txt"
+  rm -f "$PREFIX/SYMLINKS.txt"
+fi
+
+rm -f "$TMPFILE"
+
+# Write apt sources.list
+mkdir -p "$PREFIX/etc/apt"
+cat > "$PREFIX/etc/apt/sources.list" << 'EOF'
+deb https://packages.termux.dev/apt/termux-main/ stable main
+EOF
+
+# Make sure dpkg status exists
+mkdir -p "$PREFIX/var/lib/dpkg"
+touch "$PREFIX/var/lib/dpkg/status"
+
+printf '\n\033[1;33mConfiguring packages...\033[0m\n'
+"$PREFIX/bin/dpkg" --configure -a 2>/dev/null || true
+
+printf '\n\033[1;32m✓ Bootstrap installed successfully!\033[0m\n'
+printf '\n'
+printf 'Next steps:\n'
+printf '  \033[1;36mapt update\033[0m         Refresh package lists\n'
+printf '  \033[1;36mapt install openssh\033[0m   Install SSH client\n'
+printf '  \033[1;36mapt install git\033[0m        Install Git\n'
+printf '  \033[1;36mapt install python\033[0m     Install Python\n'
+printf '  \033[1;36mpkg search <query>\033[0m  Search packages\n'
+printf '\n'
+printf 'Happy hacking! \xF0\x9F\x9A\x80\n'
+"#;
+
+/// `pkg` — Termux-compatible package manager command.
+/// Wraps `apt` with the familiar `pkg install/search/remove/update/upgrade` interface.
+/// Placed in $PREFIX/bin by ensure_layout so it's on PATH from the first terminal session.
+const PKG_SCRIPT: &str = r#"#!/system/bin/sh
+# Terax: Termux-compatible package manager (pkg -> apt wrapper)
+#
+# Usage:
+#   pkg install  <pkg>...   Install packages
+#   pkg uninstall <pkg>...  Remove packages
+#   pkg update              Update package lists
+#   pkg upgrade             Upgrade all packages
+#   pkg search <pattern>    Search for packages
+#   pkg list-installed      List installed packages
+#   pkg files <pkg>         List files owned by a package
+#   pkg show <pkg>          Show package details
+#   pkg reinstall <pkg>...  Reinstall packages
+#   pkg depends <pkg>       Show dependencies of a package
+#   pkg help                Show this help
+
+PREFIX="${PREFIX:-/data/data/app.crynta.terax/files/usr}"
+
+die() {
+  printf '\033[1;31mError:\033[0m %s\n' "$1" >&2
+  exit 1
+}
+
+warn() {
+  printf '\033[1;33mWarning:\033[0m %s\n' "$1" >&2
+}
+
+help() {
+  sed -n 's/^# //p; /^$/q' "$0"
+  exit 0
+}
+
+require_bootstrap() {
+  if [ ! -x "$PREFIX/bin/apt" ]; then
+    die "Termux bootstrap is not installed.
+Run '\033[1;32mtermux-setup\033[0m' first, then try again."
+  fi
+}
+
+run_apt() {
+  require_bootstrap
+  exec "$PREFIX/bin/apt" "$@"
+}
+
+case "${1:-help}" in
+  install|add)
+    shift
+    [ $# -eq 0 ] && die "install: missing package name(s)
+Usage: pkg install <package>..."
+    run_apt install "$@"
+    ;;
+  uninstall|remove|rm|delete)
+    shift
+    [ $# -eq 0 ] && die "uninstall: missing package name(s)
+Usage: pkg uninstall <package>..."
+    run_apt remove "$@"
+    ;;
+  update)
+    run_apt update
+    ;;
+  upgrade)
+    run_apt upgrade
+    ;;
+  search|find)
+    shift
+    [ $# -eq 0 ] && die "search: missing search pattern
+Usage: pkg search <pattern>"
+    run_apt search "$@"
+    ;;
+  list-installed|list)
+    require_bootstrap
+    if command -v "$PREFIX/bin/dpkg" >/dev/null 2>&1; then
+      exec "$PREFIX/bin/dpkg" -l
+    else
+      die "dpkg not found in bootstrap"
+    fi
+    ;;
+  files|list-files)
+    shift
+    [ $# -eq 0 ] && die "files: missing package name
+Usage: pkg files <package>"
+    require_bootstrap
+    exec "$PREFIX/bin/dpkg" -L "$@"
+    ;;
+  show|info)
+    shift
+    [ $# -eq 0 ] && die "show: missing package name
+Usage: pkg show <package>"
+    run_apt show "$@"
+    ;;
+  reinstall)
+    shift
+    [ $# -eq 0 ] && die "reinstall: missing package name(s)
+Usage: pkg reinstall <package>..."
+    run_apt install --reinstall "$@"
+    ;;
+  depends|dependencies)
+    shift
+    [ $# -eq 0 ] && die "depends: missing package name
+Usage: pkg depends <package>"
+    run_apt depends "$@"
+    ;;
+  help|--help|-h)
+    help
+    ;;
+  *)
+    die "Unknown subcommand: $1
+Run 'pkg help' for usage."
+    ;;
+esac
 "#;
 
 /// `.profile` is sourced by login shells (and `bash --login`). Use it for
@@ -159,6 +407,20 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("write {}/{}: {e}", home.display(), SHRC_FILENAME))?;
     write_if_changed(&home.join(PROFILE_FILENAME), PROFILE_BODY)
         .map_err(|e| format!("write {}/{}: {e}", home.display(), PROFILE_FILENAME))?;
+
+    // Write the `termux-setup` helper script into $PREFIX/bin so users
+    // can run it from the terminal.
+    let termux_setup = prefix.join(BIN_DIR_NAME).join("termux-setup");
+    write_if_changed(&termux_setup, TERMUX_SETUP_SCRIPT)
+        .map_err(|e| format!("write {}/bin/termux-setup: {e}", prefix.display()))?;
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&termux_setup, fs::Permissions::from_mode(0o755));
+
+    // Write the `pkg` command (Termux-compatible apt wrapper).
+    let pkg = prefix.join(BIN_DIR_NAME).join("pkg");
+    write_if_changed(&pkg, PKG_SCRIPT)
+        .map_err(|e| format!("write {}/bin/pkg: {e}", prefix.display()))?;
+    let _ = fs::set_permissions(&pkg, fs::Permissions::from_mode(0o755));
 
     // TERAX.md documents `TERAX_HOME` as a public convention; surface it for
     // the webview's onboarding copy via a small file users can `cat`.

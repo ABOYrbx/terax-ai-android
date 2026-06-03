@@ -8,4 +8,6 @@ pub mod proc;
 pub mod pty;
 pub mod secrets;
 pub mod shell;
+#[cfg(target_os = "android")]
+pub mod termux_pkg;
 pub mod workspace;

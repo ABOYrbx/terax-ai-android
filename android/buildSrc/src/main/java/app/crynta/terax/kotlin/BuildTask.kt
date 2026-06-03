@@ -75,8 +75,9 @@ open class BuildTask : DefaultTask() {
         val args = mutableListOf("tauri", "android", "build")
         args.add("--target")
         args.add(target)
-        if (release) {
-            args.add("--release")
+        // Build is release by default in Tauri CLI v2; use --debug for debug builds
+        if (!release) {
+            args.add("--debug")
         }
         // Build APK (will generate .so files in jniLibs)
         args.add("--apk")

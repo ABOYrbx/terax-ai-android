@@ -2,9 +2,15 @@ pub mod modules;
 
 #[cfg(target_os = "android")]
 use modules::android_fs;
-use modules::{agent, fs, git, net, pty, secrets, shell, workspace};
+#[cfg(target_os = "android")]
+use modules::termux_pkg;
+use modules::{agent, fs, git, net, pty, shell, workspace};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use modules::secrets;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
 use tauri::{PhysicalPosition, WindowEvent};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -177,6 +183,12 @@ pub fn run() {
                     }
                     Err(e) => log::error!("android_fs::init failed: {e}"),
                 }
+                // Auto-install Termux bootstrap in the background so
+                // apt/pkg are available without manual setup.
+                let handle = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    termux_pkg::auto_install(&handle).await;
+                });
             }
             Ok(())
         })
@@ -267,6 +279,16 @@ pub fn run() {
             android_fs::android_init_home,
             #[cfg(target_os = "android")]
             android_fs::android_paths,
+            #[cfg(target_os = "android")]
+            termux_pkg::termux_is_installed,
+            #[cfg(target_os = "android")]
+            termux_pkg::termux_bootstrap_status,
+            #[cfg(target_os = "android")]
+            termux_pkg::termux_install_bootstrap,
+            #[cfg(target_os = "android")]
+            termux_pkg::termux_run_apt,
+            #[cfg(target_os = "android")]
+            termux_pkg::termux_list_packages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

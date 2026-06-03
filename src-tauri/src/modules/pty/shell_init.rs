@@ -102,6 +102,10 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
             cmd.env("HOME", home);
             let prefix = crate::modules::android_fs::prefix().unwrap_or(home);
             cmd.env("PREFIX", prefix);
+            // LD_LIBRARY_PATH is required for Termux binaries (apt, dpkg, ...)
+            // to find their shared libraries at runtime.
+            cmd.env("LD_LIBRARY_PATH", prefix.join("lib"));
+            cmd.env("TMPDIR", prefix.join("tmp"));
             // POSIX: sh / mksh source $ENV at startup. Drop the path in
             // explicitly so a fresh PTY inherits the same env as login shells.
             let env_file = home.join(".shrc");
