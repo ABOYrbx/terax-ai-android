@@ -470,8 +470,8 @@ pub fn prefix_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app_data_dir(app)
-        .ok_or_else(|| "app data dir unavailable on this platform".to_string())?;
+    let base =
+        app_data_dir(app).ok_or_else(|| "app data dir unavailable on this platform".to_string())?;
 
     let home = base.join(HOME_DIR_NAME);
     let prefix = base.join(PREFIX_DIR_NAME);
@@ -479,8 +479,7 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let tmp = base.join(TMP_DIR_NAME);
 
     for dir in [&base, &home, &prefix, &prefix_bin, &tmp] {
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("create_dir_all({}): {e}", dir.display()))?;
+        fs::create_dir_all(dir).map_err(|e| format!("create_dir_all({}): {e}", dir.display()))?;
     }
 
     write_if_changed(&home.join(SHRC_FILENAME), SHRC_BODY)
@@ -498,6 +497,15 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let pkg = prefix.join(BIN_DIR_NAME).join("pkg");
     write_executable(&pkg, PKG_SCRIPT)
         .map_err(|e| format!("write {}/bin/pkg: {e}", prefix.display()))?;
+
+    // Re-apply execute permissions on every startup across the entire
+    // $PREFIX tree.  Android filesystems don't always preserve the executable
+    // stickiness across app restarts, backup/restore cycles, or OEM
+    // "optimisations", and the bootstrap zip may not carry Unix mode metadata
+    // for every entry it extracts.  Packages can also install executables
+    // outside bin/ (libexec/, lib/, lib/apt/, etc.), so we do a full recursive
+    // walk — not just a flat scan of bin/.
+    fix_prefix_executables(&prefix);
 
     // TERAX.md documents `TERAX_HOME` as a public convention; surface it for
     // the webview's onboarding copy via a small file users can `cat`.
@@ -556,6 +564,73 @@ fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
         .open(path)?;
     f.write_all(content.as_bytes())?;
     f.sync_all()
+}
+
+/// Recursively walk `$PREFIX` and ensure every file that *looks* like an
+/// executable (shebang `#!` script or ELF binary) has at least owner-execute
+/// (`0o100`) set.  This is the catch-all safety net for:
+///
+/// 1. Bootstrap entries whose zip `unix_mode()` returned `None`.
+/// 2. Files that lost their sticky execute bit across app restarts.
+/// 3. Packages that install helpers outside `bin/` (e.g. `libexec/`, `lib/`).
+///
+/// Called on every app startup from `ensure_layout` and after bootstrap
+/// extraction from `termux_pkg::install_inner`.
+pub fn fix_prefix_executables(prefix: &Path) {
+    let bin_dir = prefix.join("bin");
+    if bin_dir.exists() {
+        fix_executables_recursive(&bin_dir);
+    }
+
+    // Many packages install helper binaries in libexec/ and lib/
+    for sub in &["libexec", "lib"] {
+        let dir = prefix.join(sub);
+        if dir.exists() {
+            fix_executables_recursive(&dir);
+        }
+    }
+}
+
+fn fix_executables_recursive(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            fix_executables_recursive(&path);
+        } else if path.is_file() {
+            // Quick gate: skip if already has some execute bit.
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = path.metadata() {
+                let perms = meta.permissions();
+                if perms.mode() & 0o111 != 0 {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            // Read first bytes to detect shebang or ELF magic.
+            let should_exec = std::io::BufReader::new(match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            })
+            .fill_buf()
+            .ok()
+            .map(|buf| buf.starts_with(b"#!") || buf.starts_with(b"\x7fELF"))
+            .unwrap_or(false);
+
+            if should_exec {
+                if let Ok(meta) = path.metadata() {
+                    let perms = meta.permissions();
+                    let _ = std::fs::set_permissions(
+                        &path,
+                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Tauri command: returns the Termux-style home dir on Android, null

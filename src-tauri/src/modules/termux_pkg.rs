@@ -378,23 +378,13 @@ async fn install_inner(
         percent: 95.0,
     });
 
-    // Ensure apt and dpkg are executable
-    for bin in &["apt", "apt-get", "dpkg"] {
-        let path = prefix.join("bin").join(bin);
-        if path.exists() {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = path.metadata().ok();
-            if let Some(m) = meta {
-                let perms = m.permissions();
-                if perms.mode() & 0o111 == 0 {
-                    let _ = std::fs::set_permissions(
-                        &path,
-                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
-                    );
-                }
-            }
-        }
-    }
+    // Ensure all executables across the entire $PREFIX tree have execute
+    // permissions.  The bootstrap zip may lack Unix mode metadata on some
+    // entries, leaving files without execute bits — which causes "Permission
+    // denied" when the shell tries to run them (clear, apt, grep, etc.).
+    // Packages also install helpers in libexec/, lib/, lib/apt/, etc., so
+    // a full recursive walk is required — not just a flat scan of bin/.
+    crate::modules::android_fs::fix_prefix_executables(&prefix);
 
     // Run `dpkg --configure -a` and `apt update` in the bootstrap context
     let _ = emit(&on_event, BootstrapEvent::Log {
