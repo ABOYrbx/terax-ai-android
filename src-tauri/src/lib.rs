@@ -2,9 +2,7 @@ pub mod modules;
 
 #[cfg(target_os = "android")]
 use modules::android_fs;
-use modules::{agent, fs, git, net, pty, shell, workspace};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use modules::secrets;
+use modules::{agent, fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
@@ -257,13 +255,9 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_claude_hooks,
             agent::agent_claude_hooks_status,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_get,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_set,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_delete,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             secrets::secrets_get_all,
             net::lm_ping,
             net::ai_http_request,
