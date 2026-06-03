@@ -12,7 +12,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
-import app.tauri.TauriActivity
 
 class MainActivity : TauriActivity() {
   private val REQUEST_READ_EXTERNAL = 1001

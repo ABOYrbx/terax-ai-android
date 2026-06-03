@@ -1,3 +1,4 @@
+import { IS_ANDROID } from "@/lib/platform";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { showAgentToast } from "../components/AgentToast";
 import { useAgentStore } from "../store/agentStore";
@@ -36,9 +37,11 @@ export function routeAgentNotification({
   if (!usePreferencesStore.getState().agentNotifications) return;
   if (focused && visible) return;
 
-  useAgentStore.getState().pushNotification({ source, agent, kind, tabId, leafId });
+  useAgentStore
+    .getState()
+    .pushNotification({ source, agent, kind, tabId, leafId });
 
-  if (!focused) {
+  if (!focused || IS_ANDROID) {
     void osNotify(title, body ?? agent);
     return;
   }

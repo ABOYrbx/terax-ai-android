@@ -34,14 +34,6 @@ open class RustPlugin : Plugin<Project> {
                         abiFilters += abiList
                     }
                 }
-                defaultArchList.forEachIndexed { index, arch ->
-                    create(arch) {
-                        dimension = "abi"
-                        ndk {
-                            abiFilters.add(defaultAbiList[index])
-                        }
-                    }
-                }
             }
         }
 
@@ -72,9 +64,6 @@ open class RustPlugin : Plugin<Project> {
                     }
 
                     buildTask.dependsOn(targetBuildTask)
-                    tasks["merge$targetArchCapitalized${profileCapitalized}JniLibFolders"].dependsOn(
-                        targetBuildTask
-                    )
                 }
             }
         }

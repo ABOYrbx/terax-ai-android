@@ -13,8 +13,7 @@ use tauri::{Emitter, Manager, State};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
 use tauri::{PhysicalPosition, WindowEvent};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tauri_plugin_window_state::StateFlags;
+
 
 /// Drained on first read so HMR / re-mounts can't replay the launch dir.
 #[derive(Default)]
@@ -140,14 +139,7 @@ pub fn run() {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let builder = builder.plugin(
-        tauri_plugin_window_state::Builder::new()
-            .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
-            .build(),
-    );
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
+
 
     let builder = builder
         .setup(|_app| {
@@ -184,12 +176,8 @@ pub fn run() {
                     }
                     Err(e) => log::error!("android_fs::init failed: {e}"),
                 }
-                // Auto-install Termux bootstrap in the background so
-                // apt/pkg are available without manual setup.
-                let handle = _app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    termux_pkg::auto_install(&handle).await;
-                });
+                // Termux bootstrap is not auto-installed at startup.
+                // Users can install it manually from Settings → Package Manager.
             }
             Ok(())
         })

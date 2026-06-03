@@ -231,6 +231,16 @@ function createSlot(): Slot {
       if (event.type === "keydown") bridge.writeToPty("\x1b\r");
       return false;
     }
+    // Android Enter: xterm.js only handles Enter at keyCode 13, but
+    // Android soft keyboards fire keydown with keyCode 0 or 229.
+    if (
+      event.key === "Enter" &&
+      (event.keyCode === 0 || event.keyCode === 229)
+    ) {
+      event.preventDefault();
+      if (event.type === "keydown") bridge.writeToPty("\r");
+      return false;
+    }
     if (isTerminalCopy(event)) {
       if (event.type === "keydown" && slot.term.hasSelection()) {
         const sel = slot.term.getSelection();
