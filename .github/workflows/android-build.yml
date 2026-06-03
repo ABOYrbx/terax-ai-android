@@ -132,8 +132,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Terax ${{ github.ref_name }}
-          body_path: RELEASE_NOTES.md
-          fail_on_unmatched_files: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload APK to Release
