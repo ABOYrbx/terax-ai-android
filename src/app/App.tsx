@@ -1524,7 +1524,7 @@ export default function App() {
   const shell = (
     <ThemeProvider>
       <TooltipProvider>
-        <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
+        <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground pt-[env(safe-area-inset-top)]">
           {!zenMode && (
             <Header
             tabs={tabs}
