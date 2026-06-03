@@ -140,10 +140,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          apk_path="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
-          if [ -f "$apk_path" ]; then
+          apk_dir="src-tauri/gen/android/app/build/outputs/apk/universal/release"
+          apk_path=$(find "$apk_dir" -name '*.apk' 2>/dev/null | head -1)
+          if [ -n "$apk_path" ]; then
+            echo "Uploading $apk_path"
             gh release upload "${{ github.ref_name }}" "$apk_path#terax-android-universal-release.apk"
           else
-            echo "APK not found at $apk_path"
+            echo "No APK found in $apk_dir"
+            ls -la "$apk_dir" 2>/dev/null || echo "directory does not exist"
             exit 1
           fi
