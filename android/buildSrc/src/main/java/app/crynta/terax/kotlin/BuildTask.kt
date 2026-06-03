@@ -1,6 +1,5 @@
 import java.io.File
 import org.gradle.api.DefaultTask
-import org.gradle.api.GradleException
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.TaskAction
 
@@ -10,7 +9,7 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        val target = target ?: throw GradleException("target cannot be null")
+        val target = target ?: return
 
         val targetAbi = when (target) {
             "aarch64" -> "arm64-v8a"
@@ -30,8 +29,8 @@ open class BuildTask : DefaultTask() {
 
         project.logger.warn(
             "Native library for $target not found at expected location. " +
-            "Run 'pnpm tauri android build' or 'pnpm tauri android dev' to build the Rust backend. " +
-            "Skipping in-Gradle Rust build to avoid circular dependency with the Tauri CLI."
+            "This app is only built via GitHub Actions CI; " +
+            "local Gradle builds are not supported."
         )
     }
 }

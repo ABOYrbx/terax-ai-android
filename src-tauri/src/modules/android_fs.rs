@@ -7,7 +7,7 @@
 // the Termux model, we materialize a real home inside the app's private files
 // dir at first launch, point the PTY's `$HOME` and default cwd at it, and
 // drop a `.shrc` / `.profile` in place so the user's shell starts in a familiar
-// tree (with `$HOME`, `$PREFIX`, `~/storage`, etc.) that survives restarts.
+// tree (with `$HOME`, `$PREFIX`, etc.) that survives restarts.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,6 @@ use tauri::Manager;
 const HOME_DIR_NAME: &str = "home";
 const PREFIX_DIR_NAME: &str = "usr";
 const TMP_DIR_NAME: &str = "tmp";
-const STORAGE_DIR_NAME: &str = "storage";
 const BIN_DIR_NAME: &str = "bin";
 
 const PROFILE_FILENAME: &str = ".profile";
@@ -402,7 +401,6 @@ fi
 export TERAX_HOME TERAX_PREFIX
 
 # Ensure the standard dirs exist on first login.
-[ -d "$HOME/storage" ] || mkdir -p "$HOME/storage" 2>/dev/null || true
 [ -d "$PREFIX/bin" ] || mkdir -p "$PREFIX/bin" 2>/dev/null || true
 [ -d "$HOME/tmp" ] || mkdir -p "$HOME/tmp" 2>/dev/null || true
 "#;
@@ -479,9 +477,8 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let prefix = base.join(PREFIX_DIR_NAME);
     let prefix_bin = prefix.join(BIN_DIR_NAME);
     let tmp = base.join(TMP_DIR_NAME);
-    let storage = home.join(STORAGE_DIR_NAME);
 
-    for dir in [&base, &home, &prefix, &prefix_bin, &tmp, &storage] {
+    for dir in [&base, &home, &prefix, &prefix_bin, &tmp] {
         fs::create_dir_all(dir)
             .map_err(|e| format!("create_dir_all({}): {e}", dir.display()))?;
     }

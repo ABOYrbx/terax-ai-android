@@ -20,7 +20,8 @@ struct LaunchDir(Mutex<Option<String>>);
 
 #[tauri::command]
 fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
-    state.0.lock().expect("LaunchDir mutex poisoned").take()
+    let Ok(guard) = state.0.lock() else { return None };
+    guard.take()
 }
 
 fn parse_launch_dir() -> Option<String> {
@@ -262,7 +263,9 @@ pub fn run() {
             workspace::workspace_current_dir,
             get_launch_dir,
             open_settings_window,
+            #[cfg(not(target_os = "android"))]
             agent::agent_enable_claude_hooks,
+            #[cfg(not(target_os = "android"))]
             agent::agent_claude_hooks_status,
             secrets::secrets_get,
             secrets::secrets_set,

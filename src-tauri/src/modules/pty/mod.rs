@@ -64,36 +64,29 @@ pub async fn pty_open(
         log::error!("pty_open failed: {e}");
         e
     })?;
-    state.sessions.write().unwrap().insert(id, session);
+    state.sessions.write().map_err(|e| format!("lock poisoned: {e}"))?.insert(id, session);
     log::info!("pty opened id={id} cols={cols} rows={rows}");
     Ok(id)
 }
 
 #[tauri::command]
 pub fn pty_write(state: tauri::State<PtyState>, id: u32, data: String) -> Result<(), String> {
-    let session = state
-        .sessions
-        .read()
-        .unwrap()
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| {
+    let session = {
+        let sessions = state.sessions.read().map_err(|e| format!("lock poisoned: {e}"))?;
+        sessions.get(&id).cloned().ok_or_else(|| {
             log::warn!("pty_write: unknown id={id}");
             "no session".to_string()
-        })?;
-    // Bind to a local so the MutexGuard temporary drops before `session` —
-    // see rustc note on tail-expression temporary drop order.
-    let result = session
+        })?
+    };
+    session
         .writer
         .lock()
-        .unwrap()
+        .map_err(|e| format!("lock poisoned: {e}"))?
         .write_all(data.as_bytes())
         .map_err(|e| {
-            // EPIPE is expected if the child already exited.
             log::debug!("pty_write id={id} failed: {e}");
             e.to_string()
-        });
-    result
+        })
 }
 
 #[tauri::command]
@@ -103,20 +96,17 @@ pub fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let session = state
-        .sessions
-        .read()
-        .unwrap()
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| {
+    let session = {
+        let sessions = state.sessions.read().map_err(|e| format!("lock poisoned: {e}"))?;
+        sessions.get(&id).cloned().ok_or_else(|| {
             log::warn!("pty_resize: unknown id={id}");
             "no session".to_string()
-        })?;
-    let result = session
+        })?
+    };
+    session
         .master
         .lock()
-        .unwrap()
+        .map_err(|e| format!("lock poisoned: {e}"))?
         .resize(PtySize {
             rows,
             cols,
@@ -126,23 +116,18 @@ pub fn pty_resize(
         .map_err(|e| {
             log::warn!("pty_resize id={id} failed: {e}");
             e.to_string()
-        });
-    result
+        })
 }
 
 #[tauri::command]
 pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
-    let session = state.sessions.write().unwrap().remove(&id);
+    let session = state.sessions.write().map_err(|e| format!("lock poisoned: {e}"))?.remove(&id);
     if let Some(s) = session {
-        if let Err(e) = s.killer.lock().unwrap().kill() {
-            // Non-fatal: the child may already have exited on its own (e.g. the
-            // user ran `exit`). Log so this isn't invisible during debugging.
+        if let Err(e) = s.killer.lock().map_err(|e| format!("lock poisoned: {e}"))?.kill() {
             log::debug!("pty_close: kill id={id} returned {e}");
         }
         log::info!("pty closed id={id}");
-        // Detached: on Windows `ClosePseudoConsole` can block until conhost
-        // drains, which would freeze this Tauri worker thread and stall IPC.
-        thread::Builder::new()
+        if let Err(e) = thread::Builder::new()
             .name(format!("terax-pty-drop-{id}"))
             .spawn(move || {
                 let t0 = std::time::Instant::now();
@@ -152,7 +137,9 @@ pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
                     t0.elapsed().as_millis()
                 );
             })
-            .expect("spawn pty drop thread");
+        {
+            log::error!("failed to spawn pty drop thread for id={id}: {e}");
+        }
     } else {
         log::debug!("pty_close: unknown id={id}");
     }
@@ -161,7 +148,7 @@ pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
 
 #[tauri::command]
 pub fn pty_has_foreground_process(state: tauri::State<PtyState>, id: u32) -> Result<bool, String> {
-    let sessions = state.sessions.read().unwrap();
+    let sessions = state.sessions.read().map_err(|e| format!("lock poisoned: {e}"))?;
     let session = sessions.get(&id).ok_or_else(|| {
         log::warn!("pty_has_foreground_process: unknown session id={id}");
         "no session".to_string()
@@ -220,18 +207,20 @@ fn shell_has_children(shell_pid: u32) -> bool {
 #[tauri::command]
 pub fn pty_close_all(state: tauri::State<PtyState>) -> Result<usize, String> {
     let drained: Vec<(u32, Arc<Session>)> = {
-        let mut sessions = state.sessions.write().unwrap();
+        let mut sessions = state.sessions.write().map_err(|e| format!("lock poisoned: {e}"))?;
         sessions.drain().collect()
     };
     let count = drained.len();
     for (id, s) in drained {
-        if let Err(e) = s.killer.lock().unwrap().kill() {
+        if let Err(e) = s.killer.lock().map_err(|e| format!("lock poisoned: {e}"))?.kill() {
             log::debug!("pty_close_all: kill id={id} returned {e}");
         }
-        thread::Builder::new()
+        if let Err(e) = thread::Builder::new()
             .name(format!("terax-pty-drop-{id}"))
             .spawn(move || session::drop_session(s))
-            .expect("spawn pty drop thread");
+        {
+            log::error!("failed to spawn pty drop thread for id={id}: {e}");
+        }
     }
     if count > 0 {
         log::info!("pty_close_all: reaped {count} orphaned session(s)");

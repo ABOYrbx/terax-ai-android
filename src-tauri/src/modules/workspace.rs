@@ -24,13 +24,17 @@ pub struct WorkspaceRegistry {
 impl WorkspaceRegistry {
     pub fn authorize<P: AsRef<Path>>(&self, path: P) -> std::io::Result<PathBuf> {
         let canonical = std::fs::canonicalize(path.as_ref())?;
-        let mut set = self.roots.lock().expect("workspace registry poisoned");
+        let mut set = self.roots.lock().map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("lock poisoned: {e}"))
+        })?;
         set.insert(canonical.clone());
         Ok(canonical)
     }
 
     pub fn is_authorized(&self, target: &Path) -> bool {
-        let set = self.roots.lock().expect("workspace registry poisoned");
+        let Ok(set) = self.roots.lock() else {
+            return false;
+        };
         set.iter().any(|root| target.starts_with(root))
     }
 
@@ -40,7 +44,7 @@ impl WorkspaceRegistry {
             let cache = self
                 .canonical_cache
                 .lock()
-                .expect("canonical cache poisoned");
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("lock poisoned: {e}")))?;
             if let Some(entry) = cache.get(&key) {
                 if entry.inserted_at.elapsed() < CANONICAL_TTL {
                     return Ok(entry.canonical.clone());
@@ -51,7 +55,7 @@ impl WorkspaceRegistry {
         let mut cache = self
             .canonical_cache
             .lock()
-            .expect("canonical cache poisoned");
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("lock poisoned: {e}")))?;
         if cache.len() >= CANONICAL_CACHE_CAP {
             cache.retain(|_, entry| entry.inserted_at.elapsed() < CANONICAL_TTL);
             if cache.len() >= CANONICAL_CACHE_CAP {

@@ -69,7 +69,7 @@ static CONPTY_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) fn drop_session(session: Arc<Session>) {
     #[cfg(windows)]
-    let _guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap();
+    let _guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     drop(session);
 }
 
@@ -107,7 +107,7 @@ pub fn spawn(
     on_exit: Channel<i32>,
 ) -> Result<(Arc<Session>, PtySize), String> {
     #[cfg(windows)]
-    let _spawn_guard = CONPTY_LIFECYCLE_LOCK.lock().unwrap();
+    let _spawn_guard = CONPTY_LIFECYCLE_LOCK.lock().map_err(|e| e.to_string())?;
 
     let pty_system = native_pty_system();
     let size = PtySize {
@@ -165,9 +165,10 @@ pub fn spawn(
     let pending_r = pending.clone();
     let writer_for_da = writer.clone();
     let app_reader = app.clone();
-    let reader_thread = thread::Builder::new()
+    let reader_thread = match thread::Builder::new()
         .name("terax-pty-reader".into())
         .spawn(move || {
+            let (lock, cv) = &*pending_r;
             let mut buf = [0u8; READ_BUF];
             let mut filtered: Vec<u8> = Vec::with_capacity(READ_BUF);
             let mut da_filter = DaFilter::new();
@@ -194,15 +195,21 @@ pub fn spawn(
                         if filtered.is_empty() {
                             continue;
                         }
-                        let (lock, cv) = &*pending_r;
-                        let mut g = lock.lock().unwrap();
-                        if g.len() + filtered.len() > MAX_PENDING {
-                            dropped_bytes += g.len() as u64;
-                            g.clear();
-                            g.extend_from_slice(OVERFLOW_NOTICE);
+                        match lock.lock() {
+                            Ok(mut g) => {
+                                if g.len() + filtered.len() > MAX_PENDING {
+                                    dropped_bytes += g.len() as u64;
+                                    g.clear();
+                                    g.extend_from_slice(OVERFLOW_NOTICE);
+                                }
+                                g.extend_from_slice(&filtered);
+                                cv.notify_one();
+                            }
+                            Err(e) => {
+                                log::error!("pty reader lock poisoned: {e}");
+                                break;
+                            }
                         }
-                        g.extend_from_slice(&filtered);
-                        cv.notify_one();
                     }
                     Err(e) => {
                         log::debug!("pty reader ended: {e}");
@@ -213,34 +220,44 @@ pub fn spawn(
             agent_detect.finish(|t| {
                 let _ = app_reader.emit(AGENT_EVENT, t.into_signal(id));
             });
-            pending_r.1.notify_one();
+            cv.notify_one();
             if dropped_bytes > 0 {
                 log::warn!("pty backpressure: dropped {dropped_bytes} bytes (cap {MAX_PENDING})");
             }
         })
-        .expect("spawn pty reader thread");
+    {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("failed to spawn pty reader thread: {e}");
+            return Err(format!("failed to spawn reader thread: {e}"));
+        }
+    };
 
     let on_data_flush = on_data.clone();
     let pending_f = pending.clone();
     let done_f = done.clone();
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name("terax-pty-flusher".into())
         .spawn(move || {
             let (lock, cv) = &*pending_f;
             loop {
-                {
-                    let mut g = lock.lock().unwrap();
-                    while g.is_empty() {
-                        if done_f.load(Ordering::Acquire) {
-                            return;
-                        }
-                        let (next, _) = cv.wait_timeout(g, FLUSH_MAX_IDLE).unwrap();
-                        g = next;
+                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                while g.is_empty() {
+                    if done_f.load(Ordering::Acquire) {
+                        return;
+                    }
+                    match cv.wait_timeout(g, FLUSH_MAX_IDLE) {
+                        Ok((next, _)) => g = next,
+                        Err(_) => return,
                     }
                 }
+                drop(g);
                 // Coalesce a short window so a burst flushes as one chunk.
                 thread::sleep(FLUSH_COALESCE);
-                let chunk = std::mem::take(&mut *lock.lock().unwrap());
+                let chunk = {
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    std::mem::take(&mut *g)
+                };
                 if chunk.is_empty() {
                     continue;
                 }
@@ -250,14 +267,18 @@ pub fn spawn(
                 }
             }
         })
-        .expect("spawn pty flusher thread");
+    {
+        log::error!("failed to spawn pty flusher thread: {e}");
+        return Err(format!("failed to spawn flusher thread: {e}"));
+    }
 
     let on_data_exit = on_data;
     let pending_e = pending;
     let done_e = done;
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name("terax-pty-waiter".into())
         .spawn(move || {
+            let (lock, cv) = &*pending_e;
             let code = match child.wait() {
                 Ok(status) => status.exit_code() as i32,
                 Err(e) => {
@@ -265,8 +286,6 @@ pub fn spawn(
                     -1
                 }
             };
-            // Wait for the reader to hit EOF before taking a final snapshot of
-            // `pending`, so the last line of output never races the Exit event.
             #[cfg(windows)]
             {
                 let deadline = Instant::now() + Duration::from_millis(50);
@@ -278,8 +297,10 @@ pub fn spawn(
             if let Err(e) = reader_thread.join() {
                 log::error!("pty reader thread panicked: {e:?}");
             }
-            let (lock, cv) = &*pending_e;
-            let tail = std::mem::take(&mut *lock.lock().unwrap());
+            let tail = {
+                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                std::mem::take(&mut *g)
+            };
             if !tail.is_empty() {
                 if let Err(e) = on_data_exit.send(Response::new(tail)) {
                     log::debug!("pty final-data send failed (channel closed): {e}");
@@ -291,7 +312,10 @@ pub fn spawn(
                 log::debug!("pty exit send failed (channel closed): {e}");
             }
         })
-        .expect("spawn pty waiter thread");
+    {
+        log::error!("failed to spawn pty waiter thread: {e}");
+        return Err(format!("failed to spawn waiter thread: {e}"));
+    }
 
     Ok((session, size))
 }

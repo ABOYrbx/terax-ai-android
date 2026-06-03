@@ -43,19 +43,19 @@ fn merge_hooks(mut root: Value) -> Value {
     if !root.is_object() {
         root = json!({});
     }
-    let obj = root.as_object_mut().unwrap();
+    let Some(obj) = root.as_object_mut() else { return root; };
     let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
     if !hooks.is_object() {
         *hooks = json!({});
     }
-    let hooks = hooks.as_object_mut().unwrap();
+    let Some(hooks) = hooks.as_object_mut() else { return root; };
 
     for (event, marker) in HOOK_EVENTS {
         let arr = hooks.entry(event).or_insert_with(|| json!([]));
         if !arr.is_array() {
             *arr = json!([]);
         }
-        let arr = arr.as_array_mut().unwrap();
+        let Some(arr) = arr.as_array_mut() else { continue; };
         arr.retain(|group| !is_ours(group) && !is_empty_group(group));
         arr.push(json!({
             "hooks": [ { "type": "command", "command": hook_cmd(marker) } ]
@@ -80,6 +80,7 @@ fn settings_path() -> Result<std::path::PathBuf, String> {
         .join("settings.json"))
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn agent_enable_claude_hooks() -> Result<(), String> {
     let path = settings_path()?;
@@ -106,6 +107,7 @@ pub fn agent_enable_claude_hooks() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn agent_claude_hooks_status() -> bool {
     let Some(content) = settings_path()

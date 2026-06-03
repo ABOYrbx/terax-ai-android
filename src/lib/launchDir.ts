@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { homeDir } from "@tauri-apps/api/path";
 import { platform } from "@tauri-apps/plugin-os";
 
 let cached: string | undefined;
@@ -14,29 +13,12 @@ export async function initLaunchDir(): Promise<void> {
     return;
   }
 
-  // On Android, prefer the app's Termux-style home directory. `android_init_home`
-  // resolves and creates `<appDataDir>/home` in one round-trip; `android_home_dir`
-  // returns it after a prior `init`. The fallback to Tauri's generic `homeDir`
-  // covers the brief window before the Rust `init` has run on a cold start.
+  // On Android, start at "/" (root) so the breadcrumb doesn't show a
+  // long app-private path. The terminal shell starts at "/" and the user
+  // can `cd` into any accessible directory from there.
   if (isAndroid()) {
-    try {
-      const h = await invoke<string | null>("android_home_dir");
-      if (h) {
-        cached = h.replace(/\\/g, "/");
-        return;
-      }
-    } catch {
-      // ignore — fall through to the next source
-    }
-    try {
-      const h = await homeDir();
-      if (h) {
-        cached = h.replace(/\\/g, "/");
-        return;
-      }
-    } catch {
-      // ignore failures and fall through to undefined
-    }
+    cached = "/";
+    return;
   }
 
   cached = undefined;

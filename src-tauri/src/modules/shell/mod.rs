@@ -191,7 +191,7 @@ pub fn shell_session_open(
     };
     let session = Arc::new(ShellSession::new(initial, workspace));
     let id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
-    state.sessions.write().unwrap().insert(id, session);
+    state.sessions.write().map_err(|e| format!("shell state poisoned: {e}"))?.insert(id, session);
     Ok(id)
 }
 
@@ -208,7 +208,7 @@ pub async fn shell_session_run(
     let session = state
         .sessions
         .read()
-        .unwrap()
+        .map_err(|e| format!("shell state poisoned: {e}"))?
         .get(&id)
         .cloned()
         .ok_or_else(|| "no shell session".to_string())?;
@@ -228,7 +228,7 @@ pub async fn shell_session_run(
 
 #[tauri::command]
 pub fn shell_session_close(state: tauri::State<ShellState>, id: u32) -> Result<(), String> {
-    state.sessions.write().unwrap().remove(&id);
+    state.sessions.write().map_err(|e| format!("shell state poisoned: {e}"))?.remove(&id);
     Ok(())
 }
 
@@ -244,7 +244,7 @@ pub fn shell_bg_spawn(
     authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
     let proc = background::spawn(command, cwd, workspace)?;
     let id = state.next_bg_id.fetch_add(1, Ordering::Relaxed);
-    state.bg.write().unwrap().insert(id, proc);
+    state.bg.write().map_err(|e| format!("shell state poisoned: {e}"))?.insert(id, proc);
     Ok(id)
 }
 
@@ -257,7 +257,7 @@ pub fn shell_bg_logs(
     let proc = state
         .bg
         .read()
-        .unwrap()
+        .map_err(|e| format!("shell state poisoned: {e}"))?
         .get(&handle)
         .cloned()
         .ok_or_else(|| "no background handle".to_string())?;
@@ -266,7 +266,8 @@ pub fn shell_bg_logs(
 
 #[tauri::command]
 pub fn shell_bg_kill(state: tauri::State<ShellState>, handle: u32) -> Result<(), String> {
-    if let Some(proc) = state.bg.read().unwrap().get(&handle).cloned() {
+    let Ok(bg) = state.bg.read() else { return Ok(()) };
+    if let Some(proc) = bg.get(&handle).cloned() {
         proc.kill();
     }
     Ok(())
@@ -274,7 +275,7 @@ pub fn shell_bg_kill(state: tauri::State<ShellState>, handle: u32) -> Result<(),
 
 #[tauri::command]
 pub fn shell_bg_list(state: tauri::State<ShellState>) -> Result<Vec<BackgroundProcInfo>, String> {
-    let map = state.bg.read().unwrap();
+    let map = state.bg.read().map_err(|e| format!("shell state poisoned: {e}"))?;
     let mut out = Vec::with_capacity(map.len());
     for (id, p) in map.iter() {
         out.push(p.info(*id));

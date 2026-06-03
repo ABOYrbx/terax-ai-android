@@ -107,7 +107,7 @@ struct ChangedPayload {
 }
 
 fn ensure_started(state: &FsWatchState, app: &AppHandle) -> Result<(), String> {
-    let mut guard = state.inner.lock().expect("fs watch state poisoned");
+    let mut guard = state.inner.lock().map_err(|e| format!("fs watch lock poisoned: {e}"))?;
     if guard.is_some() {
         return Ok(());
     }
@@ -240,7 +240,7 @@ pub fn fs_watch_add(
         return Ok(());
     }
     ensure_started(&state, &app)?;
-    let mut guard = state.inner.lock().expect("fs watch state poisoned");
+    let mut guard = state.inner.lock().map_err(|e| format!("fs watch lock poisoned: {e}"))?;
     if let Some(inner) = guard.as_mut() {
         add_paths(inner, prepared);
     }
@@ -263,7 +263,7 @@ pub fn fs_watch_remove(
             std::fs::canonicalize(&resolved).unwrap_or(resolved)
         })
         .collect();
-    let mut guard = state.inner.lock().expect("fs watch state poisoned");
+    let mut guard = state.inner.lock().map_err(|e| format!("fs watch lock poisoned: {e}"))?;
     if let Some(inner) = guard.as_mut() {
         remove_paths(inner, prepared);
     }

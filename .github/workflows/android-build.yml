@@ -1,12 +1,10 @@
-name: Android CI — Build APK
+name: Build Android Release APK
 
 on:
   push:
     branches: [main]
     tags:
       - 'v*.*.*'
-  pull_request:
-    branches: [main]
   workflow_dispatch: {}
 
 permissions:
@@ -75,112 +73,26 @@ jobs:
       - name: Init Android project
         run: pnpm tauri android init --ci
 
-      - name: Build Debug APK
-        run: pnpm tauri android build --apk --debug --ci --target aarch64
-
       - name: Setup Android signing
         run: python3 scripts/setup-android-signing.py
 
       - name: Build Release APK
         run: pnpm tauri android build --apk --ci --target aarch64
 
-      - name: Upload debug APK artifact
+      - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
-          if-no-files-found: warn
-
-      - name: Upload release APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
+          name: terax-android-universal-release
           path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install pnpm
-        run: npm install -g pnpm@11
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Cache cargo registry & target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK
-        run: |
-          SDKMANAGER=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
-          if [ ! -f "$SDKMANAGER" ]; then
-            SDKMANAGER=$ANDROID_HOME/tools/bin/sdkmanager
-          fi
-          echo "y" | "$SDKMANAGER" --install "ndk;27.0.12077973" --sdk_root=$ANDROID_HOME
-
-      - name: Install JS deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Build frontend
-        run: pnpm build
-
-      - name: Init Android project
-        run: pnpm tauri android init --ci
-
-      - name: Setup Android signing
-        run: python3 scripts/setup-android-signing.py
-
-      - name: Build Release APK
-        run: pnpm tauri android build --apk --ci --target aarch64
-
-      - name: Create GitHub Release
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Terax ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload APK to Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          apk_dir="src-tauri/gen/android/app/build/outputs/apk/universal/release"
-          apk_path=$(find "$apk_dir" -name '*.apk' 2>/dev/null | head -1)
-          if [ -n "$apk_path" ]; then
-            echo "Uploading $apk_path"
-            gh release upload "${{ github.ref_name }}" "$apk_path#terax-android-universal-release.apk"
-          else
-            echo "No APK found in $apk_dir"
-            ls -la "$apk_dir" 2>/dev/null || echo "directory does not exist"
-            exit 1
-          fi
