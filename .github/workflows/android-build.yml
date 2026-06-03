@@ -78,11 +78,24 @@ jobs:
       - name: Build Debug APK
         run: pnpm tauri android build --apk --debug --ci --target aarch64
 
+      - name: Setup Android signing
+        run: python3 scripts/setup-android-signing.py
+
+      - name: Build Release APK
+        run: pnpm tauri android build --apk --ci --target aarch64
+
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+          if-no-files-found: warn
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
           if-no-files-found: warn
 
   release:
