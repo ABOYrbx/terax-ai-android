@@ -8,13 +8,28 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
+import app.tauri.TauriActivity
 
 class MainActivity : TauriActivity() {
   private val REQUEST_READ_EXTERNAL = 1001
-  private val REQUEST_OPEN_DOCUMENT = 1002
+
+  private val openDocumentLauncher =
+    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+      val data = result.data
+      if (data != null) {
+        val uri = data.data
+        if (uri != null) {
+          try {
+            val takeFlags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            contentResolver.takePersistableUriPermission(uri, takeFlags)
+          } catch (_: Exception) { }
+        }
+      }
+    }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -42,29 +57,13 @@ class MainActivity : TauriActivity() {
     }
   }
 
-    // Launch a Storage Access Framework picker for the user to grant access to a file or directory.
-    fun openSafPicker(mimeTypes: Array<String> = arrayOf("*/*")) {
-      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-        addCategory(Intent.CATEGORY_OPENABLE)
-        type = if (mimeTypes.size == 1) mimeTypes[0] else "*/*"
-        putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
-        flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-      }
-      startActivityForResult(intent, REQUEST_OPEN_DOCUMENT)
+  fun openSafPicker(mimeTypes: Array<String> = arrayOf("*/*")) {
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+      addCategory(Intent.CATEGORY_OPENABLE)
+      type = if (mimeTypes.size == 1) mimeTypes[0] else "*/*"
+      putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
+      flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
     }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-      super.onActivityResult(requestCode, resultCode, data)
-      if (requestCode == REQUEST_OPEN_DOCUMENT && data != null) {
-        val uri = data.data
-        if (uri != null) {
-          try {
-            val takeFlags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            contentResolver.takePersistableUriPermission(uri, takeFlags)
-          } catch (e: Exception) {
-            // ignore takePersistableUriPermission failures
-          }
-        }
-      }
-    }
+    openDocumentLauncher.launch(intent)
+  }
 }

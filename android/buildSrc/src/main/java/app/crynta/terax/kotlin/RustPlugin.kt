@@ -16,7 +16,6 @@ open class RustPlugin : Plugin<Project> {
 
     override fun apply(project: Project) = with(project) {
         config = extensions.create("rust", Config::class.java)
-
         val defaultAbiList = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64");
         val abiList = (findProperty("abiList") as? String)?.split(',') ?: defaultAbiList
 
@@ -69,9 +68,7 @@ open class RustPlugin : Plugin<Project> {
                     ).apply {
                         group = TASK_GROUP
                         description = "Build dynamic library in $profile mode for $targetArch"
-                        rootDirRel = config.rootDirRel
                         target = targetName
-                        release = profile == "release"
                     }
 
                     buildTask.dependsOn(targetBuildTask)

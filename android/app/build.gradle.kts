@@ -47,7 +47,7 @@ android {
         }
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
     buildFeatures {
         buildConfig = true
@@ -69,4 +69,7 @@ rust {
     rootDirRel = "../../src-tauri"
 }
 
-apply(from = "tauri.build.gradle.kts")
+val tauriBuild = file("tauri.build.gradle.kts")
+if (tauriBuild.exists()) {
+    apply(from = tauriBuild)
+}

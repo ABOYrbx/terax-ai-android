@@ -6,4 +6,8 @@ pluginManagement {
     }
 }
 include ':app'
-apply from: 'tauri.settings.gradle'
+
+def tauriSettings = file('tauri.settings.gradle')
+if (tauriSettings.exists()) {
+    apply from: tauriSettings
+}
