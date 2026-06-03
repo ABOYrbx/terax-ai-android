@@ -8,6 +8,8 @@ This release fixes a critical bug where terminal input did not appear on Android
   - The Android keyboard handler now runs before the IME guard, and accepts both `keyCode === 0` and `keyCode === 229`.
   - On Android, `isComposing` is reliably set during actual IME composition, so the guard correctly distinguishes IME input from regular typing.
 
-### Changed
+### Infrastructure
 
-- Restored Android CI workflow that builds APK on push and creates GitHub releases on version tags.
+- Restored Android CI workflow that builds APK and creates GitHub releases on version tags.
+- Fixed hardcoded macOS developer paths in `tauri.conf.json`, `gradle.properties`, and `BuildTask.kt` that prevented CI builds from completing.
+- CI now runs only on tag pushes (no duplicate runs on branch pushes).

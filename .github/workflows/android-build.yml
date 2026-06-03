@@ -2,10 +2,12 @@ name: Android CI — Build APK
 
 on:
   push:
-    branches: [ main ]
     tags:
       - 'v*.*.*'
   workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -132,12 +134,11 @@ jobs:
           name: Terax ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload APK to Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           apk_path="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
           if [ -f "$apk_path" ]; then
