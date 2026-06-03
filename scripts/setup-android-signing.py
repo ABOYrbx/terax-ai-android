@@ -8,8 +8,7 @@ import os
 github_workspace = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
 
 with open(keystore_props, "w") as f:
-    f.write(f"storePassword=android\n")
-    f.write(f"keyPassword=android\n")
+    f.write(f"password=android\n")
     f.write(f"keyAlias=key0\n")
     f.write(f"storeFile={github_workspace}/src-tauri/android.keystore\n")
 
