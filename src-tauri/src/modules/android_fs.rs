@@ -541,6 +541,7 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == content {
+            use std::os::unix::fs::PermissionsExt;
             let meta = path.metadata()?;
             let perms = meta.permissions();
             if (perms.mode() & 0o111) != 0 {

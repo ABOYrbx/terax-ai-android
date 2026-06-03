@@ -199,6 +199,7 @@ pub async fn secrets_delete(
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]
