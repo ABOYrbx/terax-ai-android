@@ -64,9 +64,10 @@ import {
 } from "@/modules/header";
 import { MarkdownStack } from "@/modules/markdown";
 import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
-import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { openSettingsWindow, type SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged, setThemeId as persistThemeId } from "@/modules/settings/store";
+import { SettingsDialog } from "@/modules/settings/SettingsDialog";
 import {
   ShortcutsDialog,
   useGlobalShortcuts,
@@ -445,6 +446,9 @@ export default function App() {
       .finally(() => setLaunchCwdResolved(true));
   }, []);
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const miniOpen = useChatStore((s) => s.mini.open);
@@ -510,6 +514,19 @@ export default function App() {
       void unlistenP.then((fn) => fn());
     };
   }, [setApiKeys, setCustomEndpointKeys, prefsHydrated]);
+
+  useEffect(() => {
+    const unlistenP = getCurrentWebviewWindow().listen<string>(
+      "terax:open-settings",
+      (e) => {
+        setSettingsTab((e.payload as SettingsTab | null | undefined) ?? null);
+        setSettingsOpen(true);
+      },
+    );
+    return () => {
+      void unlistenP.then((fn) => fn());
+    };
+  }, []);
 
   // Hydrate the cross-window preference store and mirror the default model
   // into chatStore so the dropdown reflects what the user picked in Settings.
@@ -1691,6 +1708,12 @@ export default function App() {
           />
 
           <UpdaterDialog />
+
+          <SettingsDialog
+            open={settingsOpen}
+            tab={settingsTab}
+            onClose={() => setSettingsOpen(false)}
+          />
 
           <AlertDialog
             open={pendingCloseTab !== null}

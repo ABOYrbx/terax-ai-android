@@ -5,6 +5,7 @@ import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AiScanIcon,
+  Cancel01Icon,
   InformationCircleIcon,
   PaintBoardIcon,
   Settings01Icon,
@@ -44,14 +45,18 @@ function readInitialTab(): SettingsTab {
   if (typeof window === "undefined") return "general";
   const url = new URL(window.location.href);
   const t = url.searchParams.get("tab");
-  // Back-compat: legacy "ai" / "connections" → "models".
   if (t === "ai" || t === "connections") return "models";
   if (t && (VALID_TABS as string[]).includes(t)) return t as SettingsTab;
   return "general";
 }
 
-export function SettingsApp() {
-  const [active, setActive] = useState<SettingsTab>(readInitialTab);
+type Props = {
+  onClose?: () => void;
+  initialTab?: SettingsTab;
+};
+
+export function SettingsApp({ onClose, initialTab }: Props) {
+  const [active, setActive] = useState<SettingsTab>(initialTab ?? readInitialTab);
   const init = usePreferencesStore((s) => s.init);
   const ActiveSection = TABS.find(t => t.id === active)?.component;
 
@@ -60,6 +65,7 @@ export function SettingsApp() {
   }, [init]);
 
   useEffect(() => {
+    if (onClose) return;
     const apply = (detail: string) => {
       if (detail === "ai" || detail === "connections") {
         setActive("models");
@@ -76,7 +82,7 @@ export function SettingsApp() {
     return () => {
       void unlistenPromise.then((un) => un());
     };
-  }, []);
+  }, [onClose]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground select-none pt-[env(safe-area-inset-top)]">
@@ -105,7 +111,18 @@ export function SettingsApp() {
             ))}
           </TabsList>
         </Tabs>
-        {USE_CUSTOM_WINDOW_CONTROLS && <WindowControls closeOnly />}
+        {USE_CUSTOM_WINDOW_CONTROLS && (onClose ? (
+          <button
+            type="button"
+            aria-label="Close settings"
+            onClick={onClose}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors mr-1"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={14} strokeWidth={2} />
+          </button>
+        ) : (
+          <WindowControls closeOnly />
+        ))}
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-7 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

@@ -6,9 +6,7 @@ use modules::{agent, fs, git, net, pty, shell, workspace};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use modules::secrets;
 use std::sync::Mutex;
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
-#[cfg(not(target_os = "android"))]
-use tauri::Emitter;
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
 use tauri::{PhysicalPosition, WindowEvent};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -111,7 +109,10 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn open_settings_window(_app: tauri::AppHandle, _tab: Option<String>) -> Result<(), String> {
+async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.emit("terax:open-settings", tab);
+    }
     Ok(())
 }
 
