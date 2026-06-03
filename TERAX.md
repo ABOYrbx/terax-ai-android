@@ -145,6 +145,17 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
   - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `embedBootstrapper` (offline install).
 - Auto-updater configured with a public minisign key; release artifacts at `https://github.com/crynta/terax-ai/releases/latest/download/latest.json`.
 
+## Remaining work (Android)
+
+Items still needing implementation tracked in open PRs and branches:
+
+1. **PR #1 — Command execution (EACCES) + bash shell**: Permission denied fix for `$PREFIX/bin` executables, switch from sh to bash. Branch: `fix/command-execution-bash`.
+2. **PR #2 — Android app icon**: Updated all mipmap raster icons and adaptive icon config. Branch: `fix/android-app-icon`.
+3. **PR #3 — Termux package management docs**: Comprehensive documentation of bootstrap installation, `pkg` CLI, and repo management. Branch: `docs/termux-pkg-feature`.
+4. **Storage folder cleanup**: No implementation yet. Should remove/recreate `$PREFIX` on every startup to ensure clean state. See `android_fs::ensure_layout()`.
+5. **Cwd display fix**: Status bar shows Android data path instead of `/` on startup. `pathUtils.segmentsFromCwd()` needs Android-specific root handling. See `src/modules/statusbar/lib/pathUtils.ts`.
+6. **Screenshot capability**: No implementation yet. Needs Android MediaProjection or WebView capture.
+
 ### Known gotchas
 
 - **React 19 strict mode** double-mounts `useEffect` in dev → terminals spawn twice on first render. The first PTY is cleaned up almost immediately. The `SPAWN_LOCK` mutex serializes this; don't be alarmed by `pty opened id=1` followed by `pty closed id=1` in dev logs.
