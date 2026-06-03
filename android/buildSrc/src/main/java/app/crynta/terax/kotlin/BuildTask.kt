@@ -88,7 +88,8 @@ open class BuildTask : DefaultTask() {
             workingDir(File(project.projectDir, rootDirRel))
             executable(executable)
             args(args)
-            environment("PATH", "/Users/lennardmertins/.cargo/bin:$pathEnv")
+            // cargo is expected to be on PATH via the CI or dev machine setup
+            environment("PATH", "$pathEnv")
             if (project.logger.isEnabled(LogLevel.DEBUG)) {
                 args("-vv")
             } else if (project.logger.isEnabled(LogLevel.INFO)) {

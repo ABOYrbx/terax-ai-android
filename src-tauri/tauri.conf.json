@@ -4,9 +4,9 @@
   "version": "0.7.5",
   "identifier": "app.crynta.terax",
   "build": {
-    "beforeDevCommand": "/Users/lennardmertins/.nvm/versions/node/v22.15.1/bin/pnpm dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "/Users/lennardmertins/.nvm/versions/node/v22.15.1/bin/pnpm build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist",
     "removeUnusedCommands": true
   },
