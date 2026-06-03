@@ -47,18 +47,6 @@ alias la='ls -A'
 alias l='ls -CF'
 alias cls='clear'
 
-# Show termux setup notice if the bootstrap is not yet installed.
-if [ ! -f "$PREFIX/bin/apt" ] && [ -n "$PS1" ]; then
-  printf '\033[1;33m╔══════════════════════════════════════════════════════════╗\033[0m\n'
-  printf '\033[1;33m║\033[0m  \033[1;37mTerax Package Manager\033[0m                                          \033[1;33m║\033[0m\n'
-  printf '\033[1;33m║\033[0m                                                      \033[1;33m║\033[0m\n'
-  printf '\033[1;33m║\033[0m  Install the Termux bootstrap to get developer tools   \033[1;33m║\033[0m\n'
-  printf '\033[1;33m║\033[0m  like \033[1;36mopenssh\033[0m, \033[1;36mgit\033[0m, \033[1;36mpython\033[0m, \033[1;36mnodejs\033[0m, and hundreds more.          \033[1;33m║\033[0m\n'
-  printf '\033[1;33m║\033[0m                                                      \033[1;33m║\033[0m\n'
-  printf '\033[1;33m║\033[0m  Run:  \033[1;32mtermux-setup\033[0m                                            \033[1;33m║\033[0m\n'
-  printf '\033[1;33m╚══════════════════════════════════════════════════════════╝\033[0m\n'
-fi
-
 # A helpful prompt that reflects cwd and exit status.
 if [ -n "$PS1" ]; then
   _terax_prompt() {
@@ -195,19 +183,23 @@ const PKG_SCRIPT: &str = r#"#!/system/bin/sh
 # Terax: Termux-compatible package manager (pkg -> apt wrapper)
 #
 # Usage:
-#   pkg install  <pkg>...   Install packages
-#   pkg uninstall <pkg>...  Remove packages
-#   pkg update              Update package lists
-#   pkg upgrade             Upgrade all packages
-#   pkg search <pattern>    Search for packages
-#   pkg list-installed      List installed packages
-#   pkg files <pkg>         List files owned by a package
-#   pkg show <pkg>          Show package details
-#   pkg reinstall <pkg>...  Reinstall packages
-#   pkg depends <pkg>       Show dependencies of a package
-#   pkg help                Show this help
+#   pkg install     <pkg>...   Install packages
+#   pkg uninstall   <pkg>...   Remove packages
+#   pkg update                 Update package lists
+#   pkg upgrade                Upgrade all packages
+#   pkg search      <pattern>  Search for packages
+#   pkg list-installed         List installed packages
+#   pkg files       <pkg>      List files owned by a package
+#   pkg show        <pkg>      Show package details
+#   pkg reinstall   <pkg>...   Reinstall packages
+#   pkg depends     <pkg>      Show dependencies of a package
+#   pkg add-repo    <name>     Add an apt repository (interactive)
+#   pkg remove-repo <name>     Remove an apt repository
+#   pkg repo list              List configured apt repositories
+#   pkg help                   Show this help
 
 PREFIX="${PREFIX:-/data/data/app.crynta.terax/files/usr}"
+SOURCES_D="$PREFIX/etc/apt/sources.list.d"
 
 die() {
   printf '\033[1;31mError:\033[0m %s\n' "$1" >&2
@@ -233,6 +225,81 @@ Run '\033[1;32mtermux-setup\033[0m' first, then try again."
 run_apt() {
   require_bootstrap
   exec "$PREFIX/bin/apt" "$@"
+}
+
+repo_list() {
+  if [ ! -d "$SOURCES_D" ]; then
+    printf 'No additional repositories configured.\n'
+    exit 0
+  fi
+  found=0
+  for f in "$SOURCES_D"/*.list; do
+    [ -f "$f" ] || continue
+    found=1
+    name=$(basename "$f" .list)
+    content=$(grep -v '^#' "$f" | grep -v '^$' | head -1)
+    printf '\033[1;36m%s\033[0m\n' "$name"
+    if [ -n "$content" ]; then
+      printf '  %s\n' "$content"
+    fi
+  done
+  [ "$found" -eq 0 ] && printf 'No additional repositories configured.\n'
+}
+
+repo_add() {
+  require_bootstrap
+  mkdir -p "$SOURCES_D"
+  name="$1"
+  [ -z "$name" ] && die "add-repo: missing repository name
+Usage: pkg add-repo <name>"
+  shift
+  if [ $# -ge 2 ]; then
+    url="$1"
+    dist="$2"
+    comp="$3"
+    printf '%s\n' "deb $url $dist ${comp:-main}" > "$SOURCES_D/$name.list"
+  else
+    known=$(ls "$SOURCES_D"/ 2>/dev/null | sed 's/\.list$//')
+    printf '\033[1;33mAvailable repositories:\033[0m\n'
+    printf '  \033[1;36mx11\033[0m    - \033[1;37mTermux X11\033[0m    (deb https://packages.termux.dev/apt/termux-x11/ x11 main)\n'
+    printf '  \033[1;36mroot\033[0m   - \033[1;37mTermux Root\033[0m   (deb https://packages.termux.dev/apt/termux-root/ root stable)\n'
+    printf '  \033[1;36munstable\033[0m - \033[1;37mTermux Unstable\033[0m (deb https://packages.termux.dev/apt/termux-unstable/ unstable main)\n'
+    printf '\n'
+    case "$name" in
+      x11)
+        printf 'deb https://packages.termux.dev/apt/termux-x11/ x11 main\n' > "$SOURCES_D/$name.list"
+        printf '\033[1;32mAdded repository: %s\033[0m\n' "$name"
+        ;;
+      root)
+        printf 'deb https://packages.termux.dev/apt/termux-root/ root stable\n' > "$SOURCES_D/$name.list"
+        printf '\033[1;32mAdded repository: %s\033[0m\n' "$name"
+        ;;
+      unstable)
+        printf 'deb https://packages.termux.dev/apt/termux-unstable/ unstable main\n' > "$SOURCES_D/$name.list"
+        printf '\033[1;32mAdded repository: %s\033[0m\n' "$name"
+        ;;
+      *)
+        die "Unknown repository: $name
+Known repositories: x11, root, unstable
+Or use: pkg add-repo <name> <url> <distribution> [component]"
+        ;;
+    esac
+  fi
+  printf 'Run \033[1;36mpkg update\033[0m to refresh package lists.\n'
+}
+
+repo_remove() {
+  require_bootstrap
+  [ -z "$1" ] && die "remove-repo: missing repository name
+Usage: pkg remove-repo <name>"
+  file="$SOURCES_D/$1.list"
+  if [ -f "$file" ]; then
+    rm -f "$file"
+    printf '\033[1;32mRemoved repository: %s\033[0m\n' "$1"
+    printf 'Run \033[1;36mpkg update\033[0m to refresh package lists.\n'
+  else
+    die "Repository '$1' not found in $SOURCES_D"
+  fi
 }
 
 case "${1:-help}" in
@@ -292,6 +359,22 @@ Usage: pkg reinstall <package>..."
     [ $# -eq 0 ] && die "depends: missing package name
 Usage: pkg depends <package>"
     run_apt depends "$@"
+    ;;
+  add-repo)
+    shift
+    repo_add "$@"
+    ;;
+  remove-repo)
+    shift
+    repo_remove "$@"
+    ;;
+  repo)
+    shift
+    case "${1:-list}" in
+      list) repo_list ;;
+      *) die "Unknown repo subcommand: $1
+Usage: pkg repo list" ;;
+    esac
     ;;
   help|--help|-h)
     help
