@@ -4,7 +4,9 @@ pub mod modules;
 use modules::android_fs;
 #[cfg(target_os = "android")]
 use modules::termux_pkg;
-use modules::{agent, fs, git, net, pty, secrets, shell, workspace};
+#[cfg(not(target_os = "android"))]
+use modules::agent;
+use modules::{fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -20,7 +22,7 @@ struct LaunchDir(Mutex<Option<String>>);
 
 #[tauri::command]
 fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
-    let Ok(guard) = state.0.lock() else { return None };
+    let Ok(mut guard) = state.0.lock() else { return None };
     guard.take()
 }
 

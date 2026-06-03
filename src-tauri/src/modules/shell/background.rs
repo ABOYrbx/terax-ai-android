@@ -46,7 +46,7 @@ pub struct BackgroundProcInfo {
 impl BackgroundProc {
     pub fn read_logs(&self, since: u64) -> BackgroundLogResponse {
         let (bytes, next_offset, dropped) = self.buffer.lock()
-            .map(|mut g| g.read_from(since))
+            .map(|g| g.read_from(since))
             .unwrap_or_default();
         let exited = self.exited.load(Ordering::Acquire);
         let exit_code = if exited && !self.exit_unknown.load(Ordering::Acquire) {

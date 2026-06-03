@@ -78,15 +78,11 @@ pub fn pty_write(state: tauri::State<PtyState>, id: u32, data: String) -> Result
             "no session".to_string()
         })?
     };
-    session
-        .writer
-        .lock()
-        .map_err(|e| format!("lock poisoned: {e}"))?
-        .write_all(data.as_bytes())
-        .map_err(|e| {
-            log::debug!("pty_write id={id} failed: {e}");
-            e.to_string()
-        })
+    let mut guard = session.writer.lock().map_err(|e| format!("lock poisoned: {e}"))?;
+    guard.write_all(data.as_bytes()).map_err(|e| {
+        log::debug!("pty_write id={id} failed: {e}");
+        e.to_string()
+    })
 }
 
 #[tauri::command]
@@ -103,20 +99,17 @@ pub fn pty_resize(
             "no session".to_string()
         })?
     };
-    session
-        .master
-        .lock()
-        .map_err(|e| format!("lock poisoned: {e}"))?
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| {
-            log::warn!("pty_resize id={id} failed: {e}");
-            e.to_string()
-        })
+    let mut master = session.master.lock().map_err(|e| format!("lock poisoned: {e}"))?;
+    master.resize(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })
+    .map_err(|e| {
+        log::warn!("pty_resize id={id} failed: {e}");
+        e.to_string()
+    })
 }
 
 #[tauri::command]
