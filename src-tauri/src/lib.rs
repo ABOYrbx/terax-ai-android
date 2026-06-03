@@ -183,7 +183,6 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .manage(shell::ShellState::default());
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.manage(secrets::SecretsState::default());
 
     let builder = builder
