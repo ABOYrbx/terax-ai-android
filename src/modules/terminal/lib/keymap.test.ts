@@ -245,4 +245,61 @@ describe("androidPrintableKeySequence", () => {
       ),
     ).toBeNull();
   });
+
+  it("forwards a plain letter with keyCode 229 (Android WebView variant)", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keydown", keyCode: 229, key: "a", code: "KeyA" }),
+      ),
+    ).toBe("a");
+  });
+
+  it("forwards uppercase with keyCode 229 when shift is held", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 229,
+          key: "A",
+          code: "KeyA",
+          shiftKey: true,
+        }),
+      ),
+    ).toBe("A");
+  });
+
+  it("ignores non-printable keys with keyCode 229 (Enter)", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 229,
+          key: "Enter",
+          code: "Enter",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores composing events with keyCode 229", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({
+          type: "keydown",
+          keyCode: 229,
+          key: "a",
+          code: "KeyA",
+          isComposing: true,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("still ignores normal physical-key events (keyCode 65)", () => {
+    expect(
+      androidPrintableKeySequence(
+        evt({ type: "keydown", keyCode: 65, key: "a", code: "KeyA" }),
+      ),
+    ).toBeNull();
+  });
 });

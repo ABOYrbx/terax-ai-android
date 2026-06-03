@@ -45,6 +45,7 @@ This is early-stage active development, focused on the Android runtime plumbing:
 - [x] APK build configuration (minSdk 24, targetSdk 36, compileSdk 36)
 - [x] Shared Rust backend builds for Android (aarch64, armeabi-v7a, x86, x86_64)
 - [x] Frontend builds and is packaged as an asset bundle
+- [x] Terminal input works via soft keyboard (keyCode 0 and 229 fallback paths)
 - [x] ProGuard / R8 release shrinker configured
 - [x] Versioning synced with desktop (`android/app/tauri.properties`)
 - [ ] Functional tests on real Android devices
