@@ -303,6 +303,7 @@ pub(crate) fn build_oneshot_command(
     #[cfg(unix)]
     {
         let shell = crate::modules::pty::shell_init::oneshot_shell_path();
+<<<<<<< HEAD
 
         // Android: use login shell (-l) so .profile is sourced, which sources
         // .shrc. On toybox ash, $ENV is NOT supported for -c invocations, so
@@ -324,6 +325,15 @@ pub(crate) fn build_oneshot_command(
         // Android: set the same environment variables the PTY path sets via
         // `apply_common` so one-shot commands (AI tools, background processes)
         // resolve $PREFIX/bin, find shared libraries, and fix EACCES.
+=======
+        let mut cmd = Command::new(&shell);
+        cmd.arg("-c").arg(command);
+
+        // Android: set the same environment variables the PTY path sets via
+        // `apply_common` so one-shot commands (AI tools, background processes)
+        // resolve $PREFIX/bin, find shared libraries, and source .shrc (which
+        // also chmod +x all binaries to fix EACCES).
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
         #[cfg(target_os = "android")]
         if let Some(home) = crate::modules::android_fs::home() {
             cmd.env("HOME", home);
@@ -331,6 +341,7 @@ pub(crate) fn build_oneshot_command(
                 cmd.env("PREFIX", &prefix);
                 cmd.env("LD_LIBRARY_PATH", prefix.join("lib"));
                 cmd.env("TMPDIR", prefix.join("tmp"));
+<<<<<<< HEAD
                 // Set PATH explicitly so Termux binaries are found even when
                 // the shell is toybox ash (which doesn't source $ENV for -c).
                 let path = format!(
@@ -344,6 +355,12 @@ pub(crate) fn build_oneshot_command(
                 // +x at any time (restarts, backup/restore, OEM "optimisations").
                 crate::modules::android_fs::fix_prefix_executables(&prefix);
             }
+=======
+            }
+            let env_file = home.join(".shrc");
+            cmd.env("ENV", &env_file);
+            cmd.env("BASH_ENV", &env_file);
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
         }
 
         Ok(cmd)

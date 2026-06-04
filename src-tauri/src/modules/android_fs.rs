@@ -11,6 +11,10 @@
 
 use std::fs;
 use std::io::BufRead;
+<<<<<<< HEAD
+=======
+use std::os::unix::fs::PermissionsExt;
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -82,6 +86,7 @@ if [ -n "$PS1" ]; then
 fi
 
 # Android app data dirs can lose the executable sticky bit across app restarts,
+<<<<<<< HEAD
 # backup/restore cycles, or OEM "optimisations".  Fix directory search (+x)
 # across every subdirectory so the shell can traverse the tree, then make all
 # files in bin/, libexec/, opt/ executable.  Without the recursive directory
@@ -95,6 +100,14 @@ chmod +x "$(dirname "$PREFIX")" 2>/dev/null || true
 find "$PREFIX" -type d -exec chmod +x {} + 2>/dev/null || true
 find "$PREFIX/bin" "$PREFIX/libexec" "$PREFIX/opt" -type f -exec chmod +x {} + 2>/dev/null || true
 find "$PREFIX/lib" -type f ! -name '*.so*' -exec chmod +x {} + 2>/dev/null || true
+=======
+# backup/restore cycles, or OEM "optimisations".  Ensure every file in
+# $PREFIX/bin has +x so pkg/apt/dpkg/clear etc. don't get EACCES on execve().
+for _f in "$PREFIX"/bin/*; do
+  [ -f "$_f" ] && [ ! -x "$_f" ] && chmod +x "$_f" 2>/dev/null || true
+done
+unset _f
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
 "#;
 
 /// `termux-setup` shell script placed in `$PREFIX/bin/`. Self-contained
@@ -915,18 +928,26 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     fs::write(path, content)
 }
 
+<<<<<<< HEAD
 /// Write a text script to `path` with owner-only rwx (0o700). Uses
 /// `OpenOptionsExt::mode` at creation time, then always calls
 /// `set_permissions` explicitly — the mode argument is only honoured when the
 /// OS creates a new inode; if the file already exists it is silently ignored.
+=======
+/// Like `write_if_changed` but ensures the file is executable (0o755).
+/// Uses `OpenOptionsExt::mode` on Unix to request execute bits at creation
+/// time, then always calls `set_permissions` explicitly because `mode()` is
+/// only honoured when the OS actually creates the inode — if the file already
+/// exists the mode argument is silently ignored, leaving stale permissions
+/// (e.g. 0o644 from a prior failed write or a backup restore) in place.
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
 fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == content {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = path.metadata()?;
-            let perms = meta.permissions();
-            if (perms.mode() & 0o111) != 0 {
-                return Ok(());
+            if let Ok(meta) = path.metadata() {
+                if meta.permissions().mode() & 0o111 != 0 {
+                    return Ok(());
+                }
             }
         }
     }
@@ -941,12 +962,17 @@ fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     f.write_all(content.as_bytes())?;
     f.sync_all()?;
 
+<<<<<<< HEAD
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+=======
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
 
     Ok(())
 }
 
+<<<<<<< HEAD
 /// Extract a bundled binary (from e.g. `include_bytes!`) into `$PREFIX/bin/`.
 ///
 /// On the first call the bytes are written to disk with owner-only rwx (0o700)
@@ -992,6 +1018,10 @@ pub fn extract_bundled_binary(prefix: &Path, name: &str, data: &[u8]) -> Result<
 /// Recursively walk `$PREFIX` and ensure executables have the owner-execute
 /// bit (`0o100`) set, and that all directories have search (`+x`) permission.
 /// This is the catch-all safety net for:
+=======
+/// Recursively walk `$PREFIX` and ensure executables have the owner-execute
+/// bit (`0o100`) set.  This is the catch-all safety net for:
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
 ///
 /// 1. Bootstrap entries whose zip `unix_mode()` returned `None`.
 /// 2. Files that lost their sticky execute bit across app restarts.
@@ -1007,9 +1037,15 @@ pub fn extract_bundled_binary(prefix: &Path, name: &str, data: &[u8]) -> Result<
 /// - Every directory under `$PREFIX` is ensured to have `+x` (search)
 ///   permission so the shell can traverse the tree.
 ///
+/// Strategy is per-directory:
+/// - `bin/` — everything should be executable; no heuristics needed.
+/// - `libexec/`, `lib/` — only shebang scripts and ELF binaries get the bit
+///   (libraries are not executables).
+///
 /// Called on every app startup from `ensure_layout` and after bootstrap
 /// extraction from `termux_pkg::install_inner`.
 pub fn fix_prefix_executables(prefix: &Path) {
+<<<<<<< HEAD
     // Fix the parent of prefix (the app's base/ dir) too — if it loses search
     // (+x), even fix_directory_search_permissions will silently fail because
     // metadata() on prefix requires traversing through the parent.
@@ -1036,6 +1072,13 @@ pub fn fix_prefix_executables(prefix: &Path) {
         set_all_executable_recursive(&bin_dir);
     }
 
+=======
+    let bin_dir = prefix.join("bin");
+    if bin_dir.exists() {
+        set_all_executable_recursive(&bin_dir);
+    }
+
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
     // Many packages install helper binaries in libexec/ and lib/ alongside
     // regular shared objects; use detection there so we don't chmod .so files.
     for sub in &["libexec", "lib"] {
@@ -1116,6 +1159,33 @@ fn set_all_executable_recursive(dir: &Path) {
     }
 }
 
+<<<<<<< HEAD
+=======
+/// Make every regular file under `dir` owner-executable, no questions asked.
+/// Used for `bin/` where non-executables should not be present.
+fn set_all_executable_recursive(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            set_all_executable_recursive(&path);
+        } else if path.is_file() || path.is_symlink() {
+            if let Ok(meta) = path.metadata() {
+                let perms = meta.permissions();
+                if perms.mode() & 0o111 == 0 {
+                    let _ = std::fs::set_permissions(
+                        &path,
+                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                    );
+                }
+            }
+        }
+    }
+}
+
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
 /// Only shebang scripts and ELF binaries get the execute bit.
 fn fix_executables_recursive(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -1125,15 +1195,12 @@ fn fix_executables_recursive(dir: &Path) {
         let path = entry.path();
         if path.is_dir() {
             fix_executables_recursive(&path);
-        } else if path.is_file() {
-            // Quick gate: skip if already has some execute bit.
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = path.metadata() {
-                let perms = meta.permissions();
-                if perms.mode() & 0o111 != 0 {
-                    continue;
-                }
-            } else {
+        } else if path.is_file() || path.is_symlink() {
+            let Ok(meta) = path.metadata() else {
+                continue;
+            };
+            let perms = meta.permissions();
+            if perms.mode() & 0o111 != 0 {
                 continue;
             }
             // Read first bytes to detect shebang or ELF magic.
@@ -1148,10 +1215,9 @@ fn fix_executables_recursive(dir: &Path) {
 
             if should_exec {
                 if let Ok(meta) = path.metadata() {
-                    let perms = meta.permissions();
                     let _ = std::fs::set_permissions(
                         &path,
-                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                        std::fs::Permissions::from_mode(meta.permissions().mode() | 0o111),
                     );
                 }
             }

@@ -195,6 +195,7 @@ mod android {
 
     pub(super) fn pick_shell() -> String {
         // $SHELL is rarely set on Android. Prefer bash over sh for a richer
+<<<<<<< HEAD
         // interactive experience. First check whether Termux bash is
         // installed in $PREFIX/bin/bash (comes from the bootstrap), then
         // fall back to system paths.  Falling back to "sh" lets $PATH
@@ -213,6 +214,14 @@ mod android {
         {
             if candidate.exists() {
                 return candidate.to_string_lossy().into_owned();
+=======
+        // interactive experience. Check canonical paths in `/system/bin` then
+        // `/bin`. Falling back to `sh` lets $PATH resolve the toybox shim on
+        // devices where neither directory listing matches.
+        for candidate in ["/system/bin/bash", "/bin/bash", "/system/bin/sh", "/bin/sh"] {
+            if Path::new(candidate).exists() {
+                return candidate.to_string();
+>>>>>>> 3df97062c85cd0f2f2c10bc431852f5212ab99df
             }
         }
         "bash".to_string()
