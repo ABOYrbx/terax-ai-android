@@ -302,8 +302,27 @@ pub(crate) fn build_oneshot_command(
     }
     #[cfg(unix)]
     {
-        let mut cmd = Command::new("/bin/sh");
+        let shell = crate::modules::pty::shell_init::oneshot_shell_path();
+        let mut cmd = Command::new(&shell);
         cmd.arg("-c").arg(command);
+
+        // Android: set the same environment variables the PTY path sets via
+        // `apply_common` so one-shot commands (AI tools, background processes)
+        // resolve $PREFIX/bin, find shared libraries, and source .shrc (which
+        // also chmod +x all binaries to fix EACCES).
+        #[cfg(target_os = "android")]
+        if let Some(home) = crate::modules::android_fs::home() {
+            cmd.env("HOME", home);
+            if let Some(prefix) = crate::modules::android_fs::prefix() {
+                cmd.env("PREFIX", &prefix);
+                cmd.env("LD_LIBRARY_PATH", prefix.join("lib"));
+                cmd.env("TMPDIR", prefix.join("tmp"));
+            }
+            let env_file = home.join(".shrc");
+            cmd.env("ENV", &env_file);
+            cmd.env("BASH_ENV", &env_file);
+        }
+
         Ok(cmd)
     }
     #[cfg(windows)]
@@ -394,9 +413,8 @@ mod tests {
     }
 
     #[test]
-    fn build_oneshot_command_uses_sh_minus_c_on_unix() {
+    fn build_oneshot_command_uses_minus_c_on_unix() {
         let cmd = build_oneshot_command("echo hi", &WorkspaceEnv::Local, None).unwrap();
-        assert_eq!(cmd.get_program(), "/bin/sh");
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec!["-c", "echo hi"]);
     }

@@ -10,6 +10,8 @@
 // tree (with `$HOME`, `$PREFIX`, etc.) that survives restarts.
 
 use std::fs;
+use std::io::BufRead;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -55,6 +57,14 @@ if [ -n "$PS1" ]; then
   }
   PROMPT_COMMAND=_terax_prompt
 fi
+
+# Android app data dirs can lose the executable sticky bit across app restarts,
+# backup/restore cycles, or OEM "optimisations".  Ensure every file in
+# $PREFIX/bin has +x so pkg/apt/dpkg/clear etc. don't get EACCES on execve().
+for _f in "$PREFIX"/bin/*; do
+  [ -f "$_f" ] && [ ! -x "$_f" ] && chmod +x "$_f" 2>/dev/null || true
+done
+unset _f
 "#;
 
 /// `termux-setup` shell script placed in `$PREFIX/bin/`. Self-contained
@@ -540,17 +550,18 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 }
 
 /// Like `write_if_changed` but ensures the file is executable (0o755).
-/// Uses `OpenOptionsExt::mode` on Unix to set permissions atomically
-/// at creation time, avoiding a separate `set_permissions` call that
-/// might fail silently on some Android filesystems.
+/// Uses `OpenOptionsExt::mode` on Unix to request execute bits at creation
+/// time, then always calls `set_permissions` explicitly because `mode()` is
+/// only honoured when the OS actually creates the inode — if the file already
+/// exists the mode argument is silently ignored, leaving stale permissions
+/// (e.g. 0o644 from a prior failed write or a backup restore) in place.
 fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == content {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = path.metadata()?;
-            let perms = meta.permissions();
-            if (perms.mode() & 0o111) != 0 {
-                return Ok(());
+            if let Ok(meta) = path.metadata() {
+                if meta.permissions().mode() & 0o111 != 0 {
+                    return Ok(());
+                }
             }
         }
     }
@@ -563,26 +574,35 @@ fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
         .mode(0o755)
         .open(path)?;
     f.write_all(content.as_bytes())?;
-    f.sync_all()
+    f.sync_all()?;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+
+    Ok(())
 }
 
-/// Recursively walk `$PREFIX` and ensure every file that *looks* like an
-/// executable (shebang `#!` script or ELF binary) has at least owner-execute
-/// (`0o100`) set.  This is the catch-all safety net for:
+/// Recursively walk `$PREFIX` and ensure executables have the owner-execute
+/// bit (`0o100`) set.  This is the catch-all safety net for:
 ///
 /// 1. Bootstrap entries whose zip `unix_mode()` returned `None`.
 /// 2. Files that lost their sticky execute bit across app restarts.
 /// 3. Packages that install helpers outside `bin/` (e.g. `libexec/`, `lib/`).
+///
+/// Strategy is per-directory:
+/// - `bin/` — everything should be executable; no heuristics needed.
+/// - `libexec/`, `lib/` — only shebang scripts and ELF binaries get the bit
+///   (libraries are not executables).
 ///
 /// Called on every app startup from `ensure_layout` and after bootstrap
 /// extraction from `termux_pkg::install_inner`.
 pub fn fix_prefix_executables(prefix: &Path) {
     let bin_dir = prefix.join("bin");
     if bin_dir.exists() {
-        fix_executables_recursive(&bin_dir);
+        set_all_executable_recursive(&bin_dir);
     }
 
-    // Many packages install helper binaries in libexec/ and lib/
+    // Many packages install helper binaries in libexec/ and lib/ alongside
+    // regular shared objects; use detection there so we don't chmod .so files.
     for sub in &["libexec", "lib"] {
         let dir = prefix.join(sub);
         if dir.exists() {
@@ -591,6 +611,31 @@ pub fn fix_prefix_executables(prefix: &Path) {
     }
 }
 
+/// Make every regular file under `dir` owner-executable, no questions asked.
+/// Used for `bin/` where non-executables should not be present.
+fn set_all_executable_recursive(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            set_all_executable_recursive(&path);
+        } else if path.is_file() || path.is_symlink() {
+            if let Ok(meta) = path.metadata() {
+                let perms = meta.permissions();
+                if perms.mode() & 0o111 == 0 {
+                    let _ = std::fs::set_permissions(
+                        &path,
+                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Only shebang scripts and ELF binaries get the execute bit.
 fn fix_executables_recursive(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -599,15 +644,12 @@ fn fix_executables_recursive(dir: &Path) {
         let path = entry.path();
         if path.is_dir() {
             fix_executables_recursive(&path);
-        } else if path.is_file() {
-            // Quick gate: skip if already has some execute bit.
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = path.metadata() {
-                let perms = meta.permissions();
-                if perms.mode() & 0o111 != 0 {
-                    continue;
-                }
-            } else {
+        } else if path.is_file() || path.is_symlink() {
+            let Ok(meta) = path.metadata() else {
+                continue;
+            };
+            let perms = meta.permissions();
+            if perms.mode() & 0o111 != 0 {
                 continue;
             }
             // Read first bytes to detect shebang or ELF magic.
@@ -622,10 +664,9 @@ fn fix_executables_recursive(dir: &Path) {
 
             if should_exec {
                 if let Ok(meta) = path.metadata() {
-                    let perms = meta.permissions();
                     let _ = std::fs::set_permissions(
                         &path,
-                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                        std::fs::Permissions::from_mode(meta.permissions().mode() | 0o111),
                     );
                 }
             }
