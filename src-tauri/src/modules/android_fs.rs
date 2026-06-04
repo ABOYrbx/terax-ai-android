@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::io::BufRead;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -557,11 +558,10 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == content {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = path.metadata()?;
-            let perms = meta.permissions();
-            if (perms.mode() & 0o111) != 0 {
-                return Ok(());
+            if let Ok(meta) = path.metadata() {
+                if meta.permissions().mode() & 0o111 != 0 {
+                    return Ok(());
+                }
             }
         }
     }
@@ -576,7 +576,6 @@ fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     f.write_all(content.as_bytes())?;
     f.sync_all()?;
 
-    use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
 
     Ok(())
@@ -615,7 +614,6 @@ pub fn fix_prefix_executables(prefix: &Path) {
 /// Make every regular file under `dir` owner-executable, no questions asked.
 /// Used for `bin/` where non-executables should not be present.
 fn set_all_executable_recursive(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -646,15 +644,12 @@ fn fix_executables_recursive(dir: &Path) {
         let path = entry.path();
         if path.is_dir() {
             fix_executables_recursive(&path);
-        } else if path.is_file() {
-            // Quick gate: skip if already has some execute bit.
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = path.metadata() {
-                let perms = meta.permissions();
-                if perms.mode() & 0o111 != 0 {
-                    continue;
-                }
-            } else {
+        } else if path.is_file() || path.is_symlink() {
+            let Ok(meta) = path.metadata() else {
+                continue;
+            };
+            let perms = meta.permissions();
+            if perms.mode() & 0o111 != 0 {
                 continue;
             }
             // Read first bytes to detect shebang or ELF magic.
@@ -669,10 +664,9 @@ fn fix_executables_recursive(dir: &Path) {
 
             if should_exec {
                 if let Ok(meta) = path.metadata() {
-                    let perms = meta.permissions();
                     let _ = std::fs::set_permissions(
                         &path,
-                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                        std::fs::Permissions::from_mode(meta.permissions().mode() | 0o111),
                     );
                 }
             }
