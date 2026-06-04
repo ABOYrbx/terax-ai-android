@@ -317,6 +317,16 @@ async fn install_inner(
 
         if entry.is_dir() {
             let _ = std::fs::create_dir_all(&target_path);
+            // Ensure directories always have search (+x) permission.
+            // The zip may carry stale modes without the execute bit,
+            // which would prevent the shell from traversing into them.
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &target_path,
+                    std::fs::Permissions::from_mode(mode | 0o111),
+                );
+            }
             continue;
         }
 
@@ -519,6 +529,9 @@ pub fn run_apt(args: Vec<String>) -> Result<String, String> {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if output.status.success() {
+        // Android filesystem may strip execute bits from newly extracted
+        // executables.  Fix permissions after any mutating apt operation.
+        crate::modules::android_fs::fix_prefix_executables(&prefix);
         Ok(if stderr.is_empty() { stdout } else { format!("{stdout}{stderr}") })
     } else {
         // apt sometimes writes to stdout even on non-zero exit (e.g. search results)

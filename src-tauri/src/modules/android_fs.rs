@@ -10,6 +10,7 @@
 // tree (with `$HOME`, `$PREFIX`, etc.) that survives restarts.
 
 use std::fs;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -22,6 +23,7 @@ const BIN_DIR_NAME: &str = "bin";
 
 const PROFILE_FILENAME: &str = ".profile";
 const SHRC_FILENAME: &str = ".shrc";
+const BASHRC_FILENAME: &str = ".bashrc";
 
 /// `.shrc` sources on every sh/mksh invocation when `$ENV` is set; keeps the
 /// env consistent for one-shot commands and interactive shells.
@@ -46,6 +48,29 @@ alias la='ls -A'
 alias l='ls -CF'
 alias cls='clear'
 
+# Onboarding: check if any proot rootfs is installed on first interactive
+# shell.  Prints a welcome banner only once (.terax_welcomed sentinel).
+if [ -n "$PS1" ] && [ ! -f "$HOME/.terax_welcomed" ]; then
+  touch "$HOME/.terax_welcomed"
+  _found=0
+  for _d in alpine ubuntu debian archlinux; do
+    [ -d "${PREFIX}/var/rootfs/${_d}/bin" ] && _found=1
+  done
+  if [ "$_found" -eq 0 ]; then
+    printf '\033[1;36m╔══════════════════════════════════════════════════════════════╗\033[0m\n'
+    printf '\033[1;36m║\033[0m  \033[1;37mWelcome to Terax on Android\033[0m                             \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m                                                          \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m  To get started, run:                                     \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m                                                          \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m    \033[1;32msetup-distro\033[0m    Choose a Linux distribution           \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m    \033[1;32mtermux-setup\033[0m    Install Termux package manager        \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m                                                          \033[1;36m║\033[0m\n'
+    printf '\033[1;36m╚══════════════════════════════════════════════════════════════════╝\033[0m\n'
+    printf '\n'
+  fi
+  unset _found _d
+fi
+
 # A helpful prompt that reflects cwd and exit status.
 if [ -n "$PS1" ]; then
   _terax_prompt() {
@@ -55,6 +80,21 @@ if [ -n "$PS1" ]; then
   }
   PROMPT_COMMAND=_terax_prompt
 fi
+
+# Android app data dirs can lose the executable sticky bit across app restarts,
+# backup/restore cycles, or OEM "optimisations".  Fix directory search (+x)
+# across every subdirectory so the shell can traverse the tree, then make all
+# files in bin/, libexec/, opt/ executable.  Without the recursive directory
+# pass, newly created subdirs (package installs, helper trees) block execve()
+# with EACCES even when the command file itself has +x.
+#
+# The parent of $PREFIX (the app's base/ dir) can lose search (+x) first,
+# which makes find "$PREFIX" fail silently because the OS can't traverse
+# into it.  Fix it before recursing into $PREFIX.
+chmod +x "$(dirname "$PREFIX")" 2>/dev/null || true
+find "$PREFIX" -type d -exec chmod +x {} + 2>/dev/null || true
+find "$PREFIX/bin" "$PREFIX/libexec" "$PREFIX/opt" -type f -exec chmod +x {} + 2>/dev/null || true
+find "$PREFIX/lib" -type f ! -name '*.so*' -exec chmod +x {} + 2>/dev/null || true
 "#;
 
 /// `termux-setup` shell script placed in `$PREFIX/bin/`. Self-contained
@@ -150,6 +190,12 @@ fi
 
 rm -f "$TMPFILE"
 
+# Android filesystem may strip execute bits from extracted executables.
+# Without this, every command in $PREFIX/bin returns EACCES immediately
+# after bootstrap installation. Fix permissions before continuing.
+[ -d "$PREFIX/bin" ]      && chmod -R +x "$PREFIX/bin"     2>/dev/null || true
+[ -d "$PREFIX/libexec" ]  && chmod -R +x "$PREFIX/libexec" 2>/dev/null || true
+
 # Write apt sources.list
 mkdir -p "$PREFIX/etc/apt"
 cat > "$PREFIX/etc/apt/sources.list" << 'EOF'
@@ -223,7 +269,13 @@ Run '\033[1;32mtermux-setup\033[0m' first, then try again."
 
 run_apt() {
   require_bootstrap
-  exec "$PREFIX/bin/apt" "$@"
+  "$PREFIX/bin/apt" "$@"
+  rc=$?
+  # Android filesystem may strip +x from extracted executables.
+  # Fix permissions on bin/ and libexec/ after every apt invocation.
+  [ -d "$PREFIX/bin" ]      && chmod -R +x "$PREFIX/bin"     2>/dev/null
+  [ -d "$PREFIX/libexec" ]  && chmod -R +x "$PREFIX/libexec" 2>/dev/null
+  return $rc
 }
 
 repo_list() {
@@ -385,10 +437,309 @@ Run 'pkg help' for usage."
 esac
 "#;
 
+/// `.bashrc` is sourced by interactive bash (non-login). It sources the
+/// shared `.shrc` so the permission-fix loop, PATH, and aliases apply
+/// to interactive PTY sessions too — without this, bash does NOT source
+/// `$ENV` or `$BASH_ENV`, and the .shrc safety net is never reached.
+const BASHRC_BODY: &str = r#"# Terax Android bash init. Sources .shrc for env + permission repair.
+[ -f "$HOME/.shrc" ] && . "$HOME/.shrc"
+"#;
+
+/// `setup-distro` — interactive terminal UI for selecting and installing
+/// a Linux distribution for proot-based execution. Self-contained shell
+/// script that renders a Terax-styled ANSI menu, downloads the rootfs
+/// tarball via wget/curl on the fly, and extracts it with tar. No Kotlin
+/// or app Context required — runs in any terminal session.
+///
+/// Placed in `$PREFIX/bin/` alongside `termux-setup` and `pkg`. User runs
+/// it from the terminal when they want to install a proot distro.
+const SETUP_DISTRO_SCRIPT: &str = r#"#!/system/bin/sh
+# Terax: Interactive Linux Distribution Installer for proot
+#
+# Renders an ANSI-styled menu in the terminal, downloads a rootfs tarball
+# and extracts it into $PREFIX/var/rootfs/<distro>/.
+#
+# Requirements: wget (or curl), tar, and ~500 MB free in $PREFIX.
+# Supported architectures: aarch64, arm, x86_64, i686.
+#
+
+set -e
+
+# ── ANSI helpers ──────────────────────────────────────────────────────────
+BOLD='\033[1m'
+DIM='\033[2m'
+CYAN='\033[1;36m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+RED='\033[1;31m'
+WHITE='\033[1;37m'
+BLUE='\033[1;34m'
+GREY='\033[0;90m'
+NC='\033[0m'  # No Color
+
+bar()  { printf "${CYAN}%s${NC}\n" "$1"; }
+info() { printf "${GREY}%s${NC}\n" "$1"; }
+step() { printf "${CYAN}%s${NC}\n" "$1"; }
+
+# ── Architecture detection ────────────────────────────────────────────────
+detect_arch() {
+  ARCH=$(uname -m 2>/dev/null || echo "aarch64")
+  case "$ARCH" in
+    aarch64|arm64)        ARCH_SUFFIX="aarch64" ;;
+    armv7l|armv8l|arm)    ARCH_SUFFIX="arm"     ;;
+    x86_64|amd64)         ARCH_SUFFIX="x86_64"  ;;
+    i686|i586|i486)       ARCH_SUFFIX="i686"    ;;
+    *)                    ARCH_SUFFIX="aarch64"  ;;
+  esac
+  printf "%s" "$ARCH_SUFFIX"
+}
+
+AS=$(detect_arch)
+
+# ── Distribution catalog ──────────────────────────────────────────────────
+distro_name() {
+  case "$1" in
+    alpine)    printf "Alpine Linux"    ;;
+    ubuntu)    printf "Ubuntu Base"     ;;
+    debian)    printf "Debian"          ;;
+    archlinux) printf "Arch Linux"      ;;
+    *)         printf "Unknown"         ;;
+  esac
+}
+
+distro_desc() {
+  case "$1" in
+    alpine)    printf "Lightweight musl/busybox based, ~5 MB rootfs"       ;;
+    ubuntu)    printf "Full LTS with apt/deb ecosystem, ~300 MB"           ;;
+    debian)    printf "Stable and universal, apt based, ~200 MB"           ;;
+    archlinux) printf "Rolling-release, pacman based, ~250 MB"           ;;
+    *)         printf "" ;;
+  esac
+}
+
+distro_url() {
+  case "$1" in
+    alpine)    printf "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/$AS/alpine-minirootfs-3.21.3-%s.tar.gz" "$AS" ;;
+    ubuntu)    printf "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-%s-root.tar.xz" "$AS" ;;
+    debian)    printf "https://github.com/termux/proot-distro/releases/download/v4.0.0/debian-%s.tar.xz" "$AS" ;;
+    archlinux) printf "https://github.com/termux/proot-distro/releases/download/v4.0.0/archlinux-%s.tar.xz" "$AS" ;;
+    *)         printf "" ;;
+  esac
+}
+
+distro_pkg() {
+  case "$1" in
+    alpine)    printf "apk"     ;;
+    ubuntu)    printf "apt"     ;;
+    debian)    printf "apt"     ;;
+    archlinux) printf "pacman"  ;;
+    *)         printf ""        ;;
+  esac
+}
+
+distro_dir() {
+  case "$1" in
+    alpine)    printf "alpine"    ;;
+    ubuntu)    printf "ubuntu"    ;;
+    debian)    printf "debian"    ;;
+    archlinux) printf "archlinux" ;;
+    *)         printf ""          ;;
+  esac
+}
+
+DISTRO_IDS="alpine ubuntu debian archlinux"
+DISTRO_COUNT=4
+
+# ── Banner ────────────────────────────────────────────────────────────────
+show_banner() {
+  printf "\033[2J\033[H"
+  bar "╔══════════════════════════════════════════════════════════════════════╗"
+  printf "${CYAN}║${NC} ${WHITE}TERAX${NC} ${CYAN}│${NC}  ${WHITE}BEFORE YOU INSTALL${NC}  ${GREY}[STEP 1/3]${NC}${CYAN}            ║${NC}\n"
+  printf "${CYAN}║${NC} "
+  info "Choose your Linux distribution for proot-based execution on Android"
+  printf "  ${CYAN}║${NC}\n"
+  bar "╚══════════════════════════════════════════════════════════════════════╝"
+}
+
+# ── Selection menu ────────────────────────────────────────────────────────
+show_menu() {
+  printf "\n"
+  printf "  ${WHITE}Available distributions${NC}  ${GREY}(type number + Enter, or 0 to cancel)${NC}\n"
+  printf "\n"
+
+  n=1
+  for id in $DISTRO_IDS; do
+    NAME=$(distro_name "$id")
+    DESC=$(distro_desc "$id")
+    PKG=$(distro_pkg "$id")
+
+    printf "  ${CYAN}[${NC}${WHITE}%s${NC}${CYAN}]${NC}  ${WHITE}%s${NC}  ${CYAN}│${NC}  ${GREY}%s${NC}\n" "$n" "$NAME" "$DESC"
+    printf "      ${GREY}pkg: %s    arch: %s${NC}\n" "$PKG" "$AS"
+    if [ "$n" -lt "$DISTRO_COUNT" ]; then
+      printf "      ${GREY}%s${NC}\n" "$(printf '─%.0s' $(seq 1 58))"
+    fi
+    n=$((n + 1))
+  done
+
+  printf "\n"
+  printf "  ${CYAN}>${NC} ${GREEN}Selection${NC} ${CYAN}[1-%s]${NC}: " "$DISTRO_COUNT"
+}
+
+show_invalid() {
+  printf "${RED}Invalid selection.${NC} Press Enter to retry..."
+  read -r _
+}
+
+# ── Download + extract ────────────────────────────────────────────────────
+install_distro() {
+  DISTRO_ID="$1"
+  NAME=$(distro_name "$DISTRO_ID")
+  URL=$(distro_url "$DISTRO_ID")
+  DIR=$(distro_dir "$DISTRO_ID")
+  PKG=$(distro_pkg "$DISTRO_ID")
+  ROOTFS_DIR="${PREFIX}/var/rootfs/${DIR}"
+
+  printf "\033[2J\033[H"
+  bar "╔══════════════════════════════════════════════════════════════════════╗"
+  printf "${CYAN}║${NC} ${WHITE}INSTALLING:${NC} ${WHITE}%s${NC}" "$NAME"
+  # Pad to align the right border
+  _len=$(printf "%s" "$NAME" | wc -c)
+  _pad=$((45 - _len))
+  printf "%${_pad}s${CYAN}║${NC}\n" ""
+  printf "${CYAN}║${NC} "
+  info "$(printf '%.66s' "$URL")"
+  printf "${CYAN}║${NC}\n"
+  bar "╚══════════════════════════════════════════════════════════════════════╝"
+  printf "\n"
+
+  mkdir -p "$ROOTFS_DIR"
+
+  # Determine download tool
+  DL_CMD=""
+  DL_PROGRESS=""
+  if command -v curl >/dev/null 2>&1; then
+    DL_CMD="curl -L --progress-bar"
+    DL_PROGRESS="curl"
+  elif command -v wget >/dev/null 2>&1; then
+    DL_CMD="wget -O -"
+    DL_PROGRESS="wget"
+  else
+    printf "\n${RED}Error: Neither curl nor wget found.${NC}\n"
+    printf "${GREY}Install one via: apt install curl${NC}\n"
+    return 1
+  fi
+
+  printf "  ${CYAN}▸${NC} ${WHITE}Downloading rootfs...${NC}\n"
+  printf "\n"
+
+  # Download and pipe directly to tar for extraction
+  TAR_FLAGS=""
+  case "$URL" in
+    *.tar.gz|*.tgz)  TAR_FLAGS="-xzf" ;;
+    *.tar.xz)        TAR_FLAGS="-xJf" ;;
+    *.tar.bz2)       TAR_FLAGS="-xjf" ;;
+    *.tar)           TAR_FLAGS="-xf"  ;;
+  esac
+
+  if [ "$DL_PROGRESS" = "curl" ]; then
+    (cd "$ROOTFS_DIR" && curl -L --progress-bar "$URL" | tar $TAR_FLAGS - 2>&1) || {
+      rc=$?
+      printf "\n${RED}Download or extraction failed (exit code: %s).${NC}\n" "$rc"
+      return 1
+    }
+  else
+    (cd "$ROOTFS_DIR" && wget -O - "$URL" 2>&1 | tar $TAR_FLAGS - 2>&1) || {
+      rc=$?
+      printf "\n${RED}Download or extraction failed (exit code: %s).${NC}\n" "$rc"
+      return 1
+    }
+  fi
+
+  # Fix permissions on the extracted rootfs
+  chmod +x "$(dirname "$ROOTFS_DIR")" 2>/dev/null || true
+  find "$ROOTFS_DIR" -type d -exec chmod +x {} + 2>/dev/null || true
+  find "$ROOTFS_DIR" -type f -exec chmod +x {} + 2>/dev/null || true
+
+  # Write a start script
+  cat > "$ROOTFS_DIR/start.sh" << 'STARTEOF'
+#!/system/bin/sh
+# Terax: Enter the proot environment
+exec proot -0 -r "$(dirname "$0")" -w / /bin/sh -l
+STARTEOF
+  chmod +x "$ROOTFS_DIR/start.sh"
+
+  printf "\n"
+  printf "  ${CYAN}▸${NC} ${WHITE}Installation complete.${NC}\n"
+  printf "\n"
+  bar "╔══════════════════════════════════════════════════════════════════════╗"
+  printf "${CYAN}║${NC} ${GREEN}✔  DONE${NC}  ${CYAN}│${NC}  ${WHITE}%s is ready${NC}${CYAN}               ║${NC}\n" "$NAME"
+  bar "╚══════════════════════════════════════════════════════════════════════╝"
+  printf "\n"
+  printf "  ${WHITE}Installation summary${NC}\n"
+  printf "  ${GREY}%s${NC}\n" "$(printf '─%.0s' $(seq 1 40))"
+  printf "  ${CYAN}Distribution:${NC}  %s\n" "$NAME"
+  printf "  ${CYAN}Location:${NC}      ${GREY}%s${NC}\n" "$ROOTFS_DIR"
+  printf "  ${CYAN}Package mgr:${NC}    %s\n" "$PKG"
+  printf "  ${CYAN}Architecture:${NC}   %s\n" "$AS"
+  printf "\n"
+  printf "  ${GREY}Enter the environment:${NC}\n"
+  printf "\n"
+  printf "    ${CYAN}proot -0 -r %s -w / /bin/sh -l${NC}\n" "$ROOTFS_DIR"
+  printf "\n"
+  printf "  ${GREY}Or run:${NC}  ${CYAN}%s/start.sh${NC}\n" "$ROOTFS_DIR"
+  printf "\n"
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────
+main() {
+  show_banner
+
+  # Check for required tools
+  MISSING=""
+  command -v tar >/dev/null 2>&1 || MISSING="$MISSING tar"
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    MISSING="$MISSING (wget or curl)"
+  fi
+  if [ -n "$MISSING" ]; then
+    printf "\n${RED}Missing required tools:%s${NC}\n" "$MISSING"
+    printf "${GREY}Install them via: pkg install%s${NC}\n" "$MISSING"
+    return 1
+  fi
+
+  while :; do
+    show_menu
+    read -r CHOICE
+    case "$CHOICE" in
+      0|q|Q) printf "\n${YELLOW}Cancelled.${NC}\n"; return 0 ;;
+      1|2|3|4)
+        n=0
+        for id in $DISTRO_IDS; do
+          n=$((n + 1))
+          if [ "$n" -eq "$CHOICE" ]; then
+            install_distro "$id"
+            return $?
+          fi
+        done
+        ;;
+      *)
+        printf "\n"
+        show_invalid
+        printf "\n"
+        ;;
+    esac
+  done
+}
+
+main "$@"
+"#;
+
 /// `.profile` is sourced by login shells (and `bash --login`). Use it for
 /// one-time setup so we don't redo work on every PTY.
 const PROFILE_BODY: &str = r#"# Terax Android login profile. Sourced by bash/zsh -l, not by sh.
 # Anything expensive goes here; keep .shrc lean.
+
+# Source .shrc for environment, aliases, and permission repair.
+[ -f "$HOME/.shrc" ] && . "$HOME/.shrc"
 
 if [ -z "$TERAX_HOME" ]; then
   export TERAX=1
@@ -477,15 +828,19 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let prefix = base.join(PREFIX_DIR_NAME);
     let prefix_bin = prefix.join(BIN_DIR_NAME);
     let tmp = base.join(TMP_DIR_NAME);
+    let rootfs_dir = prefix.join("var").join("rootfs");
 
-    for dir in [&base, &home, &prefix, &prefix_bin, &tmp] {
+    for dir in [&base, &home, &prefix, &prefix_bin, &tmp, &rootfs_dir] {
         fs::create_dir_all(dir).map_err(|e| format!("create_dir_all({}): {e}", dir.display()))?;
+        ensure_dir_mode_755(dir);
     }
 
     write_if_changed(&home.join(SHRC_FILENAME), SHRC_BODY)
         .map_err(|e| format!("write {}/{}: {e}", home.display(), SHRC_FILENAME))?;
     write_if_changed(&home.join(PROFILE_FILENAME), PROFILE_BODY)
         .map_err(|e| format!("write {}/{}: {e}", home.display(), PROFILE_FILENAME))?;
+    write_if_changed(&home.join(BASHRC_FILENAME), BASHRC_BODY)
+        .map_err(|e| format!("write {}/{}: {e}", home.display(), BASHRC_FILENAME))?;
 
     // Write the `termux-setup` helper script into $PREFIX/bin so users
     // can run it from the terminal.
@@ -497,6 +852,11 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let pkg = prefix.join(BIN_DIR_NAME).join("pkg");
     write_executable(&pkg, PKG_SCRIPT)
         .map_err(|e| format!("write {}/bin/pkg: {e}", prefix.display()))?;
+
+    // Write the `setup-distro` interactive installer for proot rootfs.
+    let setup_distro = prefix.join(BIN_DIR_NAME).join("setup-distro");
+    write_executable(&setup_distro, SETUP_DISTRO_SCRIPT)
+        .map_err(|e| format!("write {}/bin/setup-distro: {e}", prefix.display()))?;
 
     // Re-apply execute permissions on every startup across the entire
     // $PREFIX tree.  Android filesystems don't always preserve the executable
@@ -530,6 +890,22 @@ fn ensure_layout(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(home)
 }
 
+/// Ensure a directory has at least owner-read/write/search (0o755).
+/// `fs::create_dir_all` honours the process umask, which on Android may
+/// strip the search bit from newly created directories — leaving the shell
+/// unable to traverse into `$PREFIX/bin/` to find commands.
+fn ensure_dir_mode_755(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = dir.metadata() {
+        let perms = meta.permissions();
+        let mode = perms.mode();
+        let needed = 0o755;
+        if mode & needed != needed {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | needed));
+        }
+    }
+}
+
 fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == content {
@@ -539,10 +915,10 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     fs::write(path, content)
 }
 
-/// Like `write_if_changed` but ensures the file is executable (0o755).
-/// Uses `OpenOptionsExt::mode` on Unix to set permissions atomically
-/// at creation time, avoiding a separate `set_permissions` call that
-/// might fail silently on some Android filesystems.
+/// Write a text script to `path` with owner-only rwx (0o700). Uses
+/// `OpenOptionsExt::mode` at creation time, then always calls
+/// `set_permissions` explicitly — the mode argument is only honoured when the
+/// OS creates a new inode; if the file already exists it is silently ignored.
 fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == content {
@@ -560,37 +936,187 @@ fn write_executable(path: &Path, content: &str) -> std::io::Result<()> {
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(0o755)
+        .mode(0o700)
         .open(path)?;
     f.write_all(content.as_bytes())?;
-    f.sync_all()
+    f.sync_all()?;
+
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+
+    Ok(())
 }
 
-/// Recursively walk `$PREFIX` and ensure every file that *looks* like an
-/// executable (shebang `#!` script or ELF binary) has at least owner-execute
-/// (`0o100`) set.  This is the catch-all safety net for:
+/// Extract a bundled binary (from e.g. `include_bytes!`) into `$PREFIX/bin/`.
+///
+/// On the first call the bytes are written to disk with owner-only rwx (0o700)
+/// so the Linux kernel accepts `execve()` on the file.  On subsequent calls
+/// the content is compared; if it matches and the file is already executable
+/// the write is skipped (fast no-op).
+///
+/// Usage from parent module:
+///
+/// ```ignore
+/// const MY_TOOL: &[u8] = include_bytes!("../../res/bin/my_tool");
+/// extract_bundled_binary(prefix(), "my_tool", MY_TOOL)?;
+/// ```
+pub fn extract_bundled_binary(prefix: &Path, name: &str, data: &[u8]) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = prefix.join("bin");
+    let target = bin_dir.join(name);
+
+    // Fast path: already present, same bytes, and executable.
+    if let Ok(existing) = fs::read(&target) {
+        if existing == data {
+            if let Ok(meta) = target.metadata() {
+                if meta.permissions().mode() & 0o100 != 0 {
+                    return Ok(target);
+                }
+            }
+        }
+    }
+
+    fs::create_dir_all(&bin_dir).map_err(|e| format!("create {}: {e}", bin_dir.display()))?;
+
+    fs::write(&target, data).map_err(|e| format!("write {name}: {e}"))?;
+
+    // Explicit set_permissions is the only reliable way on Android.
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod {name}: {e}"))?;
+
+    log::info!("extracted bundled binary: {name} -> {}", target.display());
+    Ok(target)
+}
+
+/// Recursively walk `$PREFIX` and ensure executables have the owner-execute
+/// bit (`0o100`) set, and that all directories have search (`+x`) permission.
+/// This is the catch-all safety net for:
 ///
 /// 1. Bootstrap entries whose zip `unix_mode()` returned `None`.
 /// 2. Files that lost their sticky execute bit across app restarts.
 /// 3. Packages that install helpers outside `bin/` (e.g. `libexec/`, `lib/`).
+/// 4. Directories that lost their search bit, preventing the shell from
+///    traversing into `$PREFIX/bin/` to find commands ("Permission denied"
+///    to the folder).
+///
+/// Strategy is per-directory:
+/// - `bin/` — everything should be executable; no heuristics needed.
+/// - `libexec/`, `lib/` — only shebang scripts and ELF binaries get the bit
+///   (libraries are not executables).
+/// - Every directory under `$PREFIX` is ensured to have `+x` (search)
+///   permission so the shell can traverse the tree.
 ///
 /// Called on every app startup from `ensure_layout` and after bootstrap
 /// extraction from `termux_pkg::install_inner`.
 pub fn fix_prefix_executables(prefix: &Path) {
-    let bin_dir = prefix.join("bin");
-    if bin_dir.exists() {
-        fix_executables_recursive(&bin_dir);
+    // Fix the parent of prefix (the app's base/ dir) too — if it loses search
+    // (+x), even fix_directory_search_permissions will silently fail because
+    // metadata() on prefix requires traversing through the parent.
+    if let Some(parent) = prefix.parent() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = parent.metadata() {
+            let perms = meta.permissions();
+            if perms.mode() & 0o111 == 0 {
+                let _ = std::fs::set_permissions(
+                    parent,
+                    std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                );
+            }
+        }
     }
 
-    // Many packages install helper binaries in libexec/ and lib/
+    // First, ensure every directory under prefix has search permission.
+    // Without +x on directories, the shell cannot traverse into $PREFIX/bin/
+    // and returns EACCES ("Permission denied") for every command.
+    fix_directory_search_permissions(prefix);
+
+    let bin_dir = prefix.join("bin");
+    if bin_dir.is_dir() {
+        set_all_executable_recursive(&bin_dir);
+    }
+
+    // Many packages install helper binaries in libexec/ and lib/ alongside
+    // regular shared objects; use detection there so we don't chmod .so files.
     for sub in &["libexec", "lib"] {
         let dir = prefix.join(sub);
-        if dir.exists() {
+        if dir.is_dir() {
             fix_executables_recursive(&dir);
+        }
+    }
+
+    // Sideloaded packages (openjdk, nodejs, etc.) install real executables
+    // under opt/; symlinks in bin/ point to them.  Without +x on the targets
+    // the shell sees EACCES even though the symlink itself is fine.
+    let opt_dir = prefix.join("opt");
+    if opt_dir.is_dir() {
+        set_all_executable_recursive(&opt_dir);
+    }
+}
+
+/// Recursively walk `prefix` and ensure every directory (including prefix
+/// itself) has the owner-search bit (`0o100`) set.  Without this, the shell
+/// sees EACCES when trying to traverse into `$PREFIX/bin/` or any
+/// subdirectory to resolve commands.  Uses `file_type` (not `is_dir`) so
+/// symlinks to external directories are not followed.
+fn fix_directory_search_permissions(prefix: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    // Fix the current directory first so read_dir on children can succeed.
+    if let Ok(meta) = prefix.metadata() {
+        let perms = meta.permissions();
+        if perms.mode() & 0o111 == 0 {
+            let _ = std::fs::set_permissions(
+                prefix,
+                std::fs::Permissions::from_mode(perms.mode() | 0o111),
+            );
+        }
+    }
+    let Ok(entries) = fs::read_dir(prefix) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ftype) = entry.file_type() else {
+            continue;
+        };
+        if !ftype.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        fix_directory_search_permissions(&path);
+    }
+}
+
+/// Make every regular file under `dir` owner-executable, no questions asked.
+/// Used for `bin/` where non-executables should not be present.
+/// Uses `file_type` (not `is_dir`/`is_file`) so symlinks to directories
+/// outside `$PREFIX` are not followed.
+fn set_all_executable_recursive(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ftype) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if ftype.is_dir() {
+            set_all_executable_recursive(&path);
+        } else if ftype.is_file() || ftype.is_symlink() {
+            if let Ok(meta) = path.metadata() {
+                let perms = meta.permissions();
+                if perms.mode() & 0o111 == 0 {
+                    let _ = std::fs::set_permissions(
+                        &path,
+                        std::fs::Permissions::from_mode(perms.mode() | 0o111),
+                    );
+                }
+            }
         }
     }
 }
 
+/// Only shebang scripts and ELF binaries get the execute bit.
 fn fix_executables_recursive(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;

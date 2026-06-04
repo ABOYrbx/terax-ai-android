@@ -302,8 +302,50 @@ pub(crate) fn build_oneshot_command(
     }
     #[cfg(unix)]
     {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg(command);
+        let shell = crate::modules::pty::shell_init::oneshot_shell_path();
+
+        // Android: use login shell (-l) so .profile is sourced, which sources
+        // .shrc. On toybox ash, $ENV is NOT supported for -c invocations, so
+        // without -l the permission fix never runs and every command in
+        // $PREFIX/bin gets EACCES.
+        #[cfg(target_os = "android")]
+        let mut cmd = {
+            let mut c = Command::new(&shell);
+            c.arg("-l").arg("-c").arg(&command);
+            c
+        };
+        #[cfg(not(target_os = "android"))]
+        let cmd = {
+            let mut c = Command::new(&shell);
+            c.arg("-c").arg(&command);
+            c
+        };
+
+        // Android: set the same environment variables the PTY path sets via
+        // `apply_common` so one-shot commands (AI tools, background processes)
+        // resolve $PREFIX/bin, find shared libraries, and fix EACCES.
+        #[cfg(target_os = "android")]
+        if let Some(home) = crate::modules::android_fs::home() {
+            cmd.env("HOME", home);
+            if let Some(prefix) = crate::modules::android_fs::prefix() {
+                cmd.env("PREFIX", &prefix);
+                cmd.env("LD_LIBRARY_PATH", prefix.join("lib"));
+                cmd.env("TMPDIR", prefix.join("tmp"));
+                // Set PATH explicitly so Termux binaries are found even when
+                // the shell is toybox ash (which doesn't source $ENV for -c).
+                let path = format!(
+                    "{}:/system/bin:/system/xbin:/vendor/bin:/product/bin:{}",
+                    prefix.join("bin").display(),
+                    std::env::var("PATH").unwrap_or_default(),
+                );
+                cmd.env("PATH", &path);
+                // Fix permissions at the Rust level too — some shells don't
+                // source $ENV or even .profile for -c, and Android can strip
+                // +x at any time (restarts, backup/restore, OEM "optimisations").
+                crate::modules::android_fs::fix_prefix_executables(&prefix);
+            }
+        }
+
         Ok(cmd)
     }
     #[cfg(windows)]
@@ -348,7 +390,7 @@ fn drain<R: Read>(reader: &mut R) -> (Vec<u8>, bool) {
     (out, truncated)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, not(target_os = "android")))]
 mod tests {
     use super::*;
 
@@ -394,9 +436,8 @@ mod tests {
     }
 
     #[test]
-    fn build_oneshot_command_uses_sh_minus_c_on_unix() {
+    fn build_oneshot_command_uses_minus_c_on_unix() {
         let cmd = build_oneshot_command("echo hi", &WorkspaceEnv::Local, None).unwrap();
-        assert_eq!(cmd.get_program(), "/bin/sh");
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec!["-c", "echo hi"]);
     }

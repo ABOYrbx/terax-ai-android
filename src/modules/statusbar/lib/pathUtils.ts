@@ -7,7 +7,7 @@ export type Segment = {
 const WINDOWS_DRIVE = /^([A-Za-z]:)(.*)$/;
 
 function normalize(p: string): string {
-  return p.replace(/\\/g, "/");
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
 export function segmentsFromCwd(cwd: string, home: string | null): Segment[] {

@@ -99,15 +99,21 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     #[cfg(target_os = "android")]
     {
         if let Some(home) = crate::modules::android_fs::home() {
-            cmd.env("HOME", home);
             let prefix = crate::modules::android_fs::prefix().unwrap_or(home);
+            cmd.env("HOME", home);
             cmd.env("PREFIX", prefix);
             // LD_LIBRARY_PATH is required for Termux binaries (apt, dpkg, ...)
             // to find their shared libraries at runtime.
             cmd.env("LD_LIBRARY_PATH", prefix.join("lib"));
             cmd.env("TMPDIR", prefix.join("tmp"));
-            // POSIX: sh / mksh source $ENV at startup. Drop the path in
-            // explicitly so a fresh PTY inherits the same env as login shells.
+            // Set PATH explicitly so Termux binaries are found even when the
+            // shell is toybox ash and $ENV is not sourced for -c invocations.
+            let path = format!(
+                "{}:/system/bin:/system/xbin:/vendor/bin:/product/bin:{}",
+                prefix.join("bin").display(),
+                std::env::var("PATH").unwrap_or_default(),
+            );
+            cmd.env("PATH", &path);
             let env_file = home.join(".shrc");
             cmd.env("ENV", &env_file);
             cmd.env("BASH_ENV", &env_file);
@@ -139,14 +145,36 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>) {
     }
 }
 
+/// Returns the shell path for one-shot command execution.
+/// On desktop Unix: uses `$SHELL` or the detected login shell.
+/// On Android: probes known shell paths.
+/// On Windows: returns the appropriate PowerShell or cmd path.
+pub fn oneshot_shell_path() -> String {
+    #[cfg(target_os = "android")]
+    {
+        android::pick_shell()
+    }
+    #[cfg(all(unix, not(target_os = "android")))]
+    {
+        std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| unix::login_shell().unwrap_or_else(|| "/bin/zsh".to_string()))
+    }
+    #[cfg(windows)]
+    {
+        windows_shell_path().to_string_lossy().to_string()
+    }
+}
+
 // Android shell init.
 //
 // The OS-level shell is `/system/bin/sh` (mksh on older images, toybox ash on
 // newer). Neither speaks the `ZDOTDIR` / `--rcfile` / fish conf.d dance the
-// desktop module sets up, so we drive a single PATH of sh with a
-// `.shrc` sourced via `$ENV` for both interactive and one-shot invocations.
-// That keeps the Tauri `shell_run_command` path consistent with the PTY
-// without bespoke per-shell handling.
+// desktop module sets up. We spawn with `-l` (login shell) so `.profile` is
+// sourced, which sources `.shrc`.  `$ENV` / `$BASH_ENV` are also set as a
+// secondary mechanism, but toybox ash does not support `$ENV` at all, so the
+// login-shell path is the primary init vehicle.
 #[cfg(target_os = "android")]
 mod android {
     use std::path::Path;
@@ -157,20 +185,37 @@ mod android {
         let shell = pick_shell();
         let mut cmd = CommandBuilder::new(&shell);
         super::apply_common(&mut cmd, cwd);
+        // Login shell (-l) so .profile is sourced, which sources .shrc.
+        // On toybox ash, $ENV is NOT supported for non-login shells, so
+        // without -l the permission fix in .shrc never runs.
+        cmd.arg("-l");
         log::info!("spawning Android shell: {shell}");
         Ok(cmd)
     }
 
-    fn pick_shell() -> String {
-        // $SHELL is rarely set on Android. Prefer the canonical paths in
-        // `/system/bin` then `/bin`. Falling back to `sh` lets $PATH resolve
-        // the toybox shim on devices where neither directory listing matches.
-        for candidate in ["/system/bin/sh", "/bin/sh", "/system/bin/bash", "/bin/bash"] {
-            if Path::new(candidate).exists() {
-                return candidate.to_string();
+    pub(super) fn pick_shell() -> String {
+        // $SHELL is rarely set on Android. Prefer bash over sh for a richer
+        // interactive experience. First check whether Termux bash is
+        // installed in $PREFIX/bin/bash (comes from the bootstrap), then
+        // fall back to system paths.  Falling back to "sh" lets $PATH
+        // resolve the toybox shim on devices where neither directory listing
+        // matches.
+        let prefix = crate::modules::android_fs::prefix();
+        for candidate in [
+            prefix.map(|p| p.join("bin").join("bash")).as_deref(),
+            Some(Path::new("/system/bin/bash")),
+            Some(Path::new("/bin/bash")),
+            Some(Path::new("/system/bin/sh")),
+            Some(Path::new("/bin/sh")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
             }
         }
-        "sh".to_string()
+        "bash".to_string()
     }
 }
 
@@ -216,7 +261,7 @@ mod unix {
         }
     }
 
-    fn login_shell() -> Option<String> {
+    pub(super) fn login_shell() -> Option<String> {
         use std::ffi::CStr;
         unsafe {
             let uid = libc::getuid();
@@ -374,7 +419,9 @@ mod windows {
             zdotdir: String,
             user_zdotdir: Option<String>,
         },
-        Bash { rcfile: String },
+        Bash {
+            rcfile: String,
+        },
         Fish,
         None,
     }
