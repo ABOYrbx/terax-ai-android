@@ -111,3 +111,7 @@ src/                -- React frontend (shared with desktop)
 src-tauri/          -- Rust backend (shared with desktop)
 docs/               -- Screenshots from the desktop build
 ```
+
+## Note
+
+## This is entirely vibe coded, expect bugs and instability. I do not take any responsibility for anything breaking or unexpected behavior.
